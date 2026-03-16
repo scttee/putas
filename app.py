@@ -17,8 +17,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = BASE_DIR / "data.db"
-UPLOAD_DIR = BASE_DIR / "uploads"
+DATA_DIR = Path(os.environ.get("DATA_DIR", str(BASE_DIR))).resolve()
+UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", str(DATA_DIR / "uploads"))).resolve()
+DB_PATH = Path(os.environ.get("DB_PATH", str(DATA_DIR / "data.db"))).resolve()
 HOST = "0.0.0.0"
 PORT = int(os.environ.get("PORT", "8000"))
 
@@ -27,6 +28,7 @@ PASSWORD_SALT = os.environ.get("PASSWORD_SALT", "change-this-salt")
 CF_ACCESS_EMAILS = {e.strip().lower() for e in os.environ.get("CF_ACCESS_EMAILS", "").split(",") if e.strip()}
 
 SUCKED_OPTIONS = {"none", "give", "receive", "both"}
+ENCOUNTER_OPTIONS = {"single", "orgy"}
 
 
 def now_utc() -> datetime:
@@ -50,15 +52,17 @@ def verify_password(password: str, password_hash: str) -> bool:
 
 
 def configured_users() -> dict[str, str]:
-    user_1 = os.environ.get("APP_USER_1", "you")
-    pass_1 = os.environ.get("APP_PASS_1", "pass1")
-    user_2 = os.environ.get("APP_USER_2", "friend")
-    pass_2 = os.environ.get("APP_PASS_2", "pass2")
+    user_1 = os.environ.get("APP_USER_1", "Scott")
+    pass_1 = os.environ.get("APP_PASS_1", "puta1")
+    user_2 = os.environ.get("APP_USER_2", "Juan")
+    pass_2 = os.environ.get("APP_PASS_2", "puta2")
     return {user_1: hash_password(pass_1), user_2: hash_password(pass_2)}
 
 
 def init_db() -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
     db = sqlite3.connect(DB_PATH)
     db.executescript(
         """
@@ -70,6 +74,9 @@ def init_db() -> None:
             location TEXT,
             nationality TEXT,
             photo_path TEXT,
+            encounter_type TEXT NOT NULL DEFAULT 'single',
+            orgy_count INTEGER,
+            orgy_details TEXT,
             topped INTEGER NOT NULL DEFAULT 0,
             bottomed INTEGER NOT NULL DEFAULT 0,
             sucked_mode TEXT NOT NULL DEFAULT 'none',
@@ -102,6 +109,9 @@ def ensure_columns(db: sqlite3.Connection) -> None:
         "meetup_date": "ALTER TABLE hookups ADD COLUMN meetup_date TEXT NOT NULL DEFAULT '1970-01-01'",
         "nationality": "ALTER TABLE hookups ADD COLUMN nationality TEXT",
         "photo_path": "ALTER TABLE hookups ADD COLUMN photo_path TEXT",
+        "encounter_type": "ALTER TABLE hookups ADD COLUMN encounter_type TEXT NOT NULL DEFAULT 'single'",
+        "orgy_count": "ALTER TABLE hookups ADD COLUMN orgy_count INTEGER",
+        "orgy_details": "ALTER TABLE hookups ADD COLUMN orgy_details TEXT",
         "sucked_mode": "ALTER TABLE hookups ADD COLUMN sucked_mode TEXT NOT NULL DEFAULT 'none'",
     }
     for name, sql in migration.items():
@@ -115,6 +125,9 @@ def ensure_columns(db: sqlite3.Connection) -> None:
     if "sucked" in cols:
         db.execute("UPDATE hookups SET sucked_mode = CASE WHEN sucked = 1 AND sucked_mode = 'none' THEN 'both' ELSE sucked_mode END")
 
+    db.execute("UPDATE hookups SET encounter_type = COALESCE(NULLIF(encounter_type,''), 'single')")
+    db.execute("UPDATE hookups SET orgy_count = CASE WHEN orgy_count IS NULL AND instr(partner_names, ',') > 0 THEN 2 ELSE orgy_count END")
+
 
 def cleanup_expired_sessions(db: sqlite3.Connection) -> None:
     db.execute("DELETE FROM sessions WHERE expires_at < ?", (now_utc().isoformat(timespec="seconds"),))
@@ -126,6 +139,7 @@ def emoji_summary(row: sqlite3.Row) -> str:
         acts.append("⬆️")
     if row["bottomed"]:
         acts.append("⬇️")
+
     suck = row["sucked_mode"]
     if suck == "give":
         acts.append("👄➡️")
@@ -133,6 +147,7 @@ def emoji_summary(row: sqlite3.Row) -> str:
         acts.append("👄⬅️")
     elif suck == "both":
         acts.append("👄🔁")
+
     stars = "⭐" * int(row["rating"] or 0)
     return " ".join(acts + ([stars] if stars else [])) or "—"
 
@@ -166,7 +181,7 @@ def render_login(error: str = "") -> bytes:
     return page(
         "Private Tracker Login",
         f"""
-<section class='card narrow'>
+<section class='card narrow stack'>
   <h1>Private Tracker Login</h1>
   <p>Use one of your two shared accounts to enter.</p>
   {error_html}
@@ -194,6 +209,17 @@ def render_dashboard(username: str, error: str = "", success: str = "") -> bytes
         """
     ).fetchone()
 
+    popular_nationality = db.execute(
+        """
+        SELECT nationality, COUNT(*) AS total
+        FROM hookups
+        WHERE COALESCE(TRIM(nationality), '') <> ''
+        GROUP BY nationality
+        ORDER BY total DESC, nationality ASC
+        LIMIT 1
+        """
+    ).fetchone()
+
     by_sucked = db.execute(
         """
         SELECT sucked_mode, COUNT(*) AS total
@@ -204,7 +230,12 @@ def render_dashboard(username: str, error: str = "", success: str = "") -> bytes
 
     per_user = db.execute(
         """
-        SELECT recorder, COUNT(*) AS total, ROUND(AVG(rating),2) AS avg_rating
+        SELECT recorder,
+               COUNT(*) AS total,
+               COALESCE(SUM(topped),0) AS topped,
+               COALESCE(SUM(bottomed),0) AS bottomed,
+               COALESCE(SUM(CASE WHEN sucked_mode <> 'none' THEN 1 ELSE 0 END),0) AS sucked_total,
+               ROUND(AVG(rating),2) AS avg_rating
         FROM hookups
         GROUP BY recorder
         ORDER BY total DESC
@@ -218,45 +249,67 @@ def render_dashboard(username: str, error: str = "", success: str = "") -> bytes
     feedback = (f"<p class='error'>{html.escape(error)}</p>" if error else "") + (
         f"<p class='success'>{html.escape(success)}</p>" if success else ""
     )
-    user_rows = "".join(
-        f"<tr><td>{html.escape(r['recorder'])}</td><td>{r['total']}</td><td>{r['avg_rating'] or '-'}</td></tr>" for r in per_user
-    ) or "<tr><td colspan='3'>No entries yet.</td></tr>"
 
-    entry_html = "".join(
-        f"""
-        <article class='entry'>
-          <div class='row between'><strong>{html.escape(r['partner_names'])}</strong><span class='muted'>📅 {html.escape(r['meetup_date'])}</span></div>
-          <small>📍 {html.escape(r['location'] or 'No location')} · 🌍 {html.escape(r['nationality'] or 'Unknown')} · 👤 {html.escape(r['recorder'])}</small>
-          <small>{emoji_summary(r)}</small>
-          {f"<a href='/uploads/{html.escape(r['photo_path'])}' target='_blank'>📸 View photo</a>" if r['photo_path'] else ''}
-          {f"<p>📝 {html.escape(r['notes'])}</p>" if r['notes'] else ''}
-        </article>
-        """
-        for r in entries
-    ) or "<p>No entries yet.</p>"
+    user_rows = "".join(
+        f"<tr><td>{html.escape(r['recorder'])}</td><td>{r['total']}</td><td>{r['topped']}</td><td>{r['bottomed']}</td><td>{r['sucked_total']}</td><td>{r['avg_rating'] or '-'}</td></tr>"
+        for r in per_user
+    ) or "<tr><td colspan='6'>No entries yet.</td></tr>"
+
+    entry_items = []
+    for r in entries:
+        orgy_tag = f"🎉 Orgy x{r['orgy_count']}" if r["encounter_type"] == "orgy" and r["orgy_count"] else "👥 Standard"
+        photo_link = f"<a href='/uploads/{html.escape(r['photo_path'])}' target='_blank'>📸 View photo</a>" if r["photo_path"] else ""
+        orgy_line = f"<p>📋 {html.escape(r['orgy_details'])}</p>" if r["orgy_details"] else ""
+        notes_line = f"<p>📝 {html.escape(r['notes'])}</p>" if r["notes"] else ""
+        entry_items.append(
+            f"""
+            <article class='entry stack-sm'>
+              <div class='row between'><strong>{html.escape(r['partner_names'])}</strong><span class='muted'>📅 {html.escape(r['meetup_date'])}</span></div>
+              <small>📍 {html.escape(r['location'] or 'No location')} · 🌍 {html.escape(r['nationality'] or 'Unknown')} · 👤 {html.escape(r['recorder'])}</small>
+              <small>{orgy_tag} · {emoji_summary(r)}</small>
+              {photo_link}
+              {orgy_line}
+              {notes_line}
+            </article>
+            """
+        )
+    entry_html = "".join(entry_items) or "<p>No entries yet.</p>"
+
+    top_nat = html.escape(popular_nationality["nationality"]) if popular_nationality else "-"
 
     return page(
         "Dashboard",
         f"""
         {nav(username)}
         {feedback}
-        <section class='grid stats'>
-          <article class='card'><h3>All Encounters</h3><p class='big'>🔥 {totals['total']}</p></article>
-          <article class='card'><h3>Top / Bottom</h3><p class='big'>⬆️ {totals['topped']} · ⬇️ {totals['bottomed']}</p></article>
-          <article class='card'><h3>Avg Rating (5)</h3><p class='big'>⭐ {totals['avg_rating'] or '-'}</p></article>
-          <article class='card'><h3>Sucked</h3><p class='small'>Give 👄➡️ {sucked_map.get('give', 0)}<br>Receive 👄⬅️ {sucked_map.get('receive', 0)}<br>Both 👄🔁 {sucked_map.get('both', 0)}</p></article>
+
+        <section class='grid stats block-gap'>
+          <article class='card stack-sm'><h3>All Encounters</h3><p class='big'>🔥 {totals['total']}</p></article>
+          <article class='card stack-sm'><h3>Top / Bottom</h3><p class='big'>⬆️ {totals['topped']} · ⬇️ {totals['bottomed']}</p></article>
+          <article class='card stack-sm'><h3>Avg Rating (5)</h3><p class='big'>⭐ {totals['avg_rating'] or '-'}</p></article>
+          <article class='card stack-sm'><h3>Sucked</h3><p class='small'>Give 👄➡️ {sucked_map.get('give', 0)}<br>Receive 👄⬅️ {sucked_map.get('receive', 0)}<br>Both 👄🔁 {sucked_map.get('both', 0)}</p></article>
+          <article class='card stack-sm'><h3>Top Nationality</h3><p class='big'>🌍 {top_nat}</p></article>
         </section>
 
-        <section class='card'>
+        <section class='card stack block-gap'>
           <h2>Quick add</h2>
           <form method='post' action='/add' enctype='multipart/form-data' class='grid form-grid'>
             <label>Names (comma separated for group) <input name='partner_names' required placeholder='Alex, Marco, Jay'></label>
             <label>Date <input type='date' name='meetup_date' required></label>
             <label>Location <input name='location'></label>
             <label>Nationality <input name='nationality' placeholder='e.g. British, Italian'></label>
+            <label>Encounter type
+              <select name='encounter_type'>
+                <option value='single'>Single / standard</option>
+                <option value='orgy'>Orgy / group</option>
+              </select>
+            </label>
+            <label>Orgy count (if group) <input type='number' min='2' name='orgy_count' placeholder='e.g. 4'></label>
             <label>Photo upload <input type='file' name='photo' accept='image/*'></label>
             <label>Rating (1-5) <input type='number' name='rating' min='1' max='5'></label>
-            <fieldset class='wide checkbox-row'><legend>Acts</legend>
+
+            <fieldset class='wide checkbox-row'>
+              <legend>Acts</legend>
               <label><input type='checkbox' name='topped'> Topped</label>
               <label><input type='checkbox' name='bottomed'> Bottomed</label>
               <label>Sucked
@@ -268,17 +321,20 @@ def render_dashboard(username: str, error: str = "", success: str = "") -> bytes
                 </select>
               </label>
             </fieldset>
+
+            <label class='wide'>Group details (optional) <textarea name='orgy_details' rows='3' placeholder='Who did what, one line each'></textarea></label>
             <label class='wide'>Notes <textarea name='notes' rows='3' maxlength='3000'></textarea></label>
             <button type='submit'>Save entry</button>
           </form>
         </section>
 
-        <section class='card'>
-          <h2>By person summary</h2>
-          <table><thead><tr><th>Person</th><th>Count</th><th>Avg ⭐</th></tr></thead><tbody>{user_rows}</tbody></table>
+        <section class='card stack block-gap'>
+          <div class='section-title'><h2>By person summary</h2><a class='btn secondary' href='/people'>Open full view</a></div>
+          <div class='table-wrap'><table><thead><tr><th>Person</th><th>Count</th><th>Top</th><th>Bottom</th><th>Suck*</th><th>Avg ⭐</th></tr></thead><tbody>{user_rows}</tbody></table></div>
+          <p class='muted'>*Suck total aggregates give/receive/both into one count.</p>
         </section>
 
-        <section class='card'><h2>Latest entries</h2><div class='entries'>{entry_html}</div></section>
+        <section class='card stack block-gap'><div class='section-title'><h2>Latest entries</h2><a class='btn secondary' href='/person?name={html.escape(username)}'>My entries</a></div><div class='entries'>{entry_html}</div></section>
         """,
     )
 
@@ -287,14 +343,26 @@ def render_people(username: str) -> bytes:
     db = sqlite3.connect(DB_PATH)
     db.row_factory = sqlite3.Row
     users = db.execute(
-        "SELECT recorder, COUNT(*) AS total, ROUND(AVG(rating),2) AS avg_rating FROM hookups GROUP BY recorder ORDER BY recorder"
+        """
+        SELECT recorder,
+               COUNT(*) AS total,
+               COALESCE(SUM(topped),0) AS topped,
+               COALESCE(SUM(bottomed),0) AS bottomed,
+               COALESCE(SUM(CASE WHEN sucked_mode <> 'none' THEN 1 ELSE 0 END),0) AS sucked_total,
+               ROUND(AVG(rating),2) AS avg_rating
+        FROM hookups
+        GROUP BY recorder
+        ORDER BY recorder
+        """
     ).fetchall()
     db.close()
+
     cards = "".join(
-        f"<a class='card link-card' href='/person?name={html.escape(u['recorder'])}'><h3>👤 {html.escape(u['recorder'])}</h3><p>{u['total']} entries · ⭐ {u['avg_rating'] or '-'}</p></a>"
+        f"<a class='card link-card stack-sm' href='/person?name={html.escape(u['recorder'])}'><h3>👤 {html.escape(u['recorder'])}</h3><p>{u['total']} entries · ⬆️ {u['topped']} · ⬇️ {u['bottomed']} · 👄 {u['sucked_total']} · ⭐ {u['avg_rating'] or '-'}</p></a>"
         for u in users
     ) or "<p>No entries yet.</p>"
-    return page("By person", f"{nav(username)}<section class='grid stats'>{cards}</section>")
+
+    return page("By person", f"{nav(username)}<section class='card stack block-gap'><div class='section-title'><h2>By person</h2><span class='muted'>Tap a card for full list</span></div><section class='grid stats'>{cards}</section></section>")
 
 
 def render_person_list(username: str, person: str) -> bytes:
@@ -305,29 +373,41 @@ def render_person_list(username: str, person: str) -> bytes:
 
     items = []
     for r in rows:
-        photo_link = f"<a href='/uploads/{html.escape(r['photo_path'])}' target='_blank'>📸 View photo</a>" if r['photo_path'] else ""
-        note_line = f"<p>📝 {html.escape(r['notes'])}</p>" if r['notes'] else ""
+        orgy_tag = f"🎉 Orgy x{r['orgy_count']}" if r["encounter_type"] == "orgy" and r["orgy_count"] else "👥 Standard"
+        photo_link = f"<a href='/uploads/{html.escape(r['photo_path'])}' target='_blank'>📸 View photo</a>" if r["photo_path"] else ""
+        orgy_line = f"<p>📋 {html.escape(r['orgy_details'])}</p>" if r["orgy_details"] else ""
+        notes_line = f"<p>📝 {html.escape(r['notes'])}</p>" if r["notes"] else ""
         items.append(
-            f"<article class='entry'><strong>{html.escape(r['partner_names'])}</strong>"
+            f"<article class='entry stack-sm'><strong>{html.escape(r['partner_names'])}</strong>"
             f"<small>📅 {html.escape(r['meetup_date'])} · 📍 {html.escape(r['location'] or 'No location')}</small>"
-            f"<small>🌍 {html.escape(r['nationality'] or 'Unknown')} · {emoji_summary(r)}</small>"
-            f"{photo_link}{note_line}</article>"
+            f"<small>🌍 {html.escape(r['nationality'] or 'Unknown')} · {orgy_tag} · {emoji_summary(r)}</small>"
+            f"{photo_link}{orgy_line}{notes_line}</article>"
         )
+
     entries = "".join(items) or "<p>No entries yet.</p>"
-    return page("Person list", f"{nav(username)}<section class='card'><h2>Entries for {html.escape(person)}</h2><div class='entries'>{entries}</div></section>")
+    return page("Person list", f"{nav(username)}<section class='card stack block-gap'><h2>Entries for {html.escape(person)}</h2><div class='entries'>{entries}</div></section>")
 
 
 def csv_export() -> bytes:
     db = sqlite3.connect(DB_PATH)
     db.row_factory = sqlite3.Row
     rows = db.execute(
-        "SELECT id, recorder, partner_names, meetup_date, location, nationality, photo_path, topped, bottomed, sucked_mode, rating, notes, created_at FROM hookups ORDER BY meetup_date DESC"
+        """
+        SELECT id, recorder, partner_names, meetup_date, location, nationality, photo_path,
+               encounter_type, orgy_count, orgy_details,
+               topped, bottomed, sucked_mode, rating, notes, created_at
+        FROM hookups
+        ORDER BY meetup_date DESC
+        """
     ).fetchall()
     db.close()
 
     out = StringIO()
     writer = csv.writer(out)
-    writer.writerow(["id", "recorder", "partner_names", "meetup_date", "location", "nationality", "photo_path", "topped", "bottomed", "sucked_mode", "rating", "notes", "created_at"])
+    writer.writerow([
+        "id", "recorder", "partner_names", "meetup_date", "location", "nationality", "photo_path",
+        "encounter_type", "orgy_count", "orgy_details", "topped", "bottomed", "sucked_mode", "rating", "notes", "created_at"
+    ])
     for r in rows:
         writer.writerow([r[k] for k in r.keys()])
     return out.getvalue().encode("utf-8")
@@ -339,21 +419,25 @@ def parse_multipart(handler: BaseHTTPRequestHandler) -> tuple[dict[str, str], di
     msg = BytesParser(policy=default).parsebytes(
         f"Content-Type: {ctype}\r\nMIME-Version: 1.0\r\n\r\n".encode("utf-8") + body
     )
+
     fields: dict[str, str] = {}
     files: dict[str, tuple[str, bytes]] = {}
     for part in msg.iter_parts():
         disp = part.get("Content-Disposition", "")
         if "form-data" not in disp:
             continue
+
         name = part.get_param("name", header="content-disposition")
-        filename = part.get_filename()
-        payload = part.get_payload(decode=True) or b""
         if not name:
             continue
+
+        filename = part.get_filename()
+        payload = part.get_payload(decode=True) or b""
         if filename:
             files[name] = (filename, payload)
         else:
             fields[name] = payload.decode("utf-8", errors="ignore")
+
     return fields, files
 
 
@@ -375,6 +459,7 @@ class Handler(BaseHTTPRequestHandler):
         raw_cookie = self.headers.get("Cookie")
         if not raw_cookie:
             return None
+
         sid_cookie = cookies.SimpleCookie(raw_cookie).get("sid")
         if not sid_cookie:
             return None
@@ -411,6 +496,7 @@ class Handler(BaseHTTPRequestHandler):
         if not path.exists() or not path.is_file():
             self.send_html(page("404", "<section class='card'><h1>Not found</h1></section>"), 404)
             return
+
         content = path.read_bytes()
         mime = "image/jpeg"
         if path.suffix.lower() == ".png":
@@ -419,6 +505,7 @@ class Handler(BaseHTTPRequestHandler):
             mime = "image/gif"
         elif path.suffix.lower() == ".webp":
             mime = "image/webp"
+
         self.send_response(200)
         self.send_header("Content-Type", mime)
         self.send_header("Content-Length", str(len(content)))
@@ -495,17 +582,26 @@ class Handler(BaseHTTPRequestHandler):
             expected_hash = configured_users().get(username)
             if expected_hash and verify_password(data.get("password", ""), expected_hash):
                 sid = secrets.token_urlsafe(24)
-                expires_at = datetime.fromtimestamp(now_utc().timestamp() + SESSION_TTL_HOURS * 3600, tz=timezone.utc).isoformat(timespec="seconds")
+                expires_at = datetime.fromtimestamp(
+                    now_utc().timestamp() + SESSION_TTL_HOURS * 3600,
+                    tz=timezone.utc,
+                ).isoformat(timespec="seconds")
+
                 db = sqlite3.connect(DB_PATH)
                 cleanup_expired_sessions(db)
-                db.execute("INSERT INTO sessions (sid, username, expires_at, created_at) VALUES (?, ?, ?, ?)", (sid, username, expires_at, now_utc().isoformat(timespec="seconds")))
+                db.execute(
+                    "INSERT INTO sessions (sid, username, expires_at, created_at) VALUES (?, ?, ?, ?)",
+                    (sid, username, expires_at, now_utc().isoformat(timespec="seconds")),
+                )
                 db.commit()
                 db.close()
+
                 self.send_response(303)
                 self.send_header("Location", "/")
                 self.send_header("Set-Cookie", f"sid={sid}; HttpOnly; SameSite=Strict; Path=/")
                 self.end_headers()
                 return
+
             self.send_html(render_login("Invalid credentials."), 401)
             return
 
@@ -517,6 +613,7 @@ class Handler(BaseHTTPRequestHandler):
                 db.execute("DELETE FROM sessions WHERE sid = ?", (sid.value,))
                 db.commit()
                 db.close()
+
             self.send_response(303)
             self.send_header("Location", "/login")
             self.send_header("Set-Cookie", "sid=; Max-Age=0; Path=/")
@@ -527,6 +624,7 @@ class Handler(BaseHTTPRequestHandler):
             if not user:
                 self.redirect("/login")
                 return
+
             ctype = self.headers.get("Content-Type", "")
             if "multipart/form-data" in ctype:
                 data, files = parse_multipart(self)
@@ -539,6 +637,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("Names are required")
 
                 meetup_date = date.fromisoformat(data.get("meetup_date", "")).isoformat()
+
                 rating_raw = data.get("rating", "").strip()
                 rating = int(rating_raw) if rating_raw else None
                 if rating is not None and not (1 <= rating <= 5):
@@ -547,6 +646,17 @@ class Handler(BaseHTTPRequestHandler):
                 sucked_mode = data.get("sucked_mode", "none")
                 if sucked_mode not in SUCKED_OPTIONS:
                     sucked_mode = "none"
+
+                encounter_type = data.get("encounter_type", "single")
+                if encounter_type not in ENCOUNTER_OPTIONS:
+                    encounter_type = "single"
+
+                orgy_count_raw = data.get("orgy_count", "").strip()
+                orgy_count = int(orgy_count_raw) if orgy_count_raw else None
+                if encounter_type == "orgy" and (orgy_count is None or orgy_count < 2):
+                    raise ValueError("For orgy mode, set group count to 2 or more")
+                if encounter_type == "single":
+                    orgy_count = None
 
                 saved_photo = None
                 photo = files.get("photo")
@@ -560,8 +670,9 @@ class Handler(BaseHTTPRequestHandler):
                     """
                     INSERT INTO hookups (
                       recorder, partner_names, meetup_date, location, nationality, photo_path,
+                      encounter_type, orgy_count, orgy_details,
                       topped, bottomed, sucked_mode, rating, notes, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         user,
@@ -570,6 +681,9 @@ class Handler(BaseHTTPRequestHandler):
                         data.get("location", "").strip(),
                         data.get("nationality", "").strip(),
                         saved_photo,
+                        encounter_type,
+                        orgy_count,
+                        data.get("orgy_details", "").strip(),
                         1 if data.get("topped") else 0,
                         1 if data.get("bottomed") else 0,
                         sucked_mode,

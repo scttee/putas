@@ -1,27 +1,43 @@
 # Private Hookup Tracker
 
-A private web app for exactly two people to track hookups and view shared + individual stats.
+A private web app for two people to track hookups and view shared + individual stats.
 
 ## Features
-- Two-user authentication (`APP_USER_1/2` + `APP_PASS_1/2`).
+- Two-user authentication (defaults: `Scott/puta1` and `Juan/puta2`).
 - Date-based logging (no time required).
-- Group entries supported by comma-separated names (e.g. orgy/group encounters).
+- Group/orgy flow:
+  - choose encounter type (`single` or `orgy`)
+  - set orgy count
+  - add comma-separated names
+  - optional per-person/group details
 - Fields: names, date, location, nationality, photo upload, top/bottom, sucked mode (give/receive/both), rating (1-5), notes.
-- Dashboard with stats and emoji summaries.
+- Dashboard with emoji summaries and **most popular nationality**.
+- By-person summary now includes totals for top/bottom/suck aggregate.
 - Dedicated **By person** and **My list** views.
 - CSV export endpoint (`/export.csv`).
 
 ## Run
 ```bash
-export APP_USER_1="your_name"
-export APP_PASS_1="your_password"
-export APP_USER_2="friend_name"
-export APP_PASS_2="friend_password"
+export APP_USER_1="Scott"
+export APP_PASS_1="puta1"
+export APP_USER_2="Juan"
+export APP_PASS_2="puta2"
 export PASSWORD_SALT="very-long-random-salt"
 python3 app.py
 ```
 
 Open `http://localhost:8000`.
+
+## Data persistence
+- Default storage paths:
+  - DB: `data.db`
+  - uploads: `uploads/`
+- You can override paths with env vars for Railway volume mounts:
+```bash
+DATA_DIR=/data
+UPLOAD_DIR=/data/uploads
+DB_PATH=/data/data.db
+```
 
 ## Railway
 This repo includes:
@@ -30,12 +46,15 @@ This repo includes:
 
 Set variables in Railway:
 ```bash
-APP_USER_1=your_name
-APP_PASS_1=strong_password_1
-APP_USER_2=friend_name
-APP_PASS_2=strong_password_2
+APP_USER_1=Scott
+APP_PASS_1=puta1
+APP_USER_2=Juan
+APP_PASS_2=puta2
 PASSWORD_SALT=very-long-random-secret
 PORT=8000
+DATA_DIR=/data
+UPLOAD_DIR=/data/uploads
+DB_PATH=/data/data.db
 ```
 
 ## Optional Cloudflare Access
@@ -44,7 +63,3 @@ If using Cloudflare Access, set:
 CF_ACCESS_EMAILS=you@example.com,friend@example.com
 ```
 When this is set, app login form is bypassed and Cloudflare identity header is used.
-
-## Notes
-- Uploaded photos are stored in `uploads/`.
-- SQLite data is stored in `data.db`; back it up regularly.
