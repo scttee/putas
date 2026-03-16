@@ -2,23 +2,16 @@
 
 A private web app for exactly two people to track hookups and view shared + individual stats.
 
-## What it includes
+## Features
 - Two-user authentication (`APP_USER_1/2` + `APP_PASS_1/2`).
-- Optional **Cloudflare Access** mode (`CF_ACCESS_EMAILS`) so only approved emails can reach the app.
-- Add entries with:
-  - name
-  - date/time
-  - location
-  - photo URL
-  - topped / bottomed / sucked
-  - rating (1-10)
-  - notes
-- Dashboard with overall totals, per-user summary cards, detailed breakdown table.
+- Date-based logging (no time required).
+- Group entries supported by comma-separated names (e.g. orgy/group encounters).
+- Fields: names, date, location, nationality, photo upload, top/bottom, sucked mode (give/receive/both), rating (1-5), notes.
+- Dashboard with stats and emoji summaries.
+- Dedicated **By person** and **My list** views.
 - CSV export endpoint (`/export.csv`).
-- SQLite storage.
 
-## Run locally
-
+## Run
 ```bash
 export APP_USER_1="your_name"
 export APP_PASS_1="your_password"
@@ -30,34 +23,12 @@ python3 app.py
 
 Open `http://localhost:8000`.
 
-## Cloudflare-ready setup (recommended)
-If you host this app behind Cloudflare, use **Cloudflare Access** for stronger access control than a random URL alone.
+## Railway
+This repo includes:
+- `Procfile` (`web: python3 app.py`)
+- `railway.json` with explicit start command and healthcheck.
 
-1. Put this origin behind Cloudflare (Tunnel, reverse proxy, or VM behind orange-cloud DNS).
-2. In Cloudflare Zero Trust, create an Access policy for the app domain.
-3. Allow only your two emails.
-4. Set this env var in the app:
-
-```bash
-export CF_ACCESS_EMAILS="you@example.com,friend@example.com"
-```
-
-When `CF_ACCESS_EMAILS` is set, app login form is disabled and access is validated via `Cf-Access-Authenticated-User-Email`.
-
-## Security notes
-- Always use HTTPS in production.
-- Use strong app passwords and unique `PASSWORD_SALT`.
-- Consider running behind Cloudflare Access + WAF.
-- SQLite is fine for low-volume private use; back up `data.db`.
-
-
-## Railway deployment (fix for build/start failures)
-If Railway says build/deploy failed, this repo now includes:
-- `Procfile` with `web: python3 app.py`
-- `railway.json` with explicit `startCommand` and healthcheck.
-
-In Railway service settings, confirm these variables are set:
-
+Set variables in Railway:
 ```bash
 APP_USER_1=your_name
 APP_PASS_1=strong_password_1
@@ -67,13 +38,13 @@ PASSWORD_SALT=very-long-random-secret
 PORT=8000
 ```
 
-Optional (recommended when using Cloudflare Access):
-
+## Optional Cloudflare Access
+If using Cloudflare Access, set:
 ```bash
 CF_ACCESS_EMAILS=you@example.com,friend@example.com
 ```
+When this is set, app login form is bypassed and Cloudflare identity header is used.
 
-If deploy still fails, check logs for:
-- missing env vars
-- Python startup command mismatch
-- service not listening on expected port
+## Notes
+- Uploaded photos are stored in `uploads/`.
+- SQLite data is stored in `data.db`; back it up regularly.
