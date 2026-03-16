@@ -14,9 +14,10 @@ A private web app for two people to track hookups and view shared + individual s
 - Dashboard with emoji summaries and **most popular nationality**.
 - By-person summary now includes totals for top/bottom/suck aggregate.
 - Dedicated **By person** and **My list** views.
+- Dashboard is organized as: stats → individual summary → add encounter → latest 5 entries.
 - CSV export endpoint (`/export.csv`).
-- Photo gallery page (`/gallery`) for all uploaded photos.
-- Backup safeguard: upload a previously exported CSV to restore/append entries.
+- Photo gallery page (`/gallery`) for all uploaded photos (lazy-loaded thumbnails).
+- Backup safeguard page (`/backup`) for CSV download and CSV restore/append upload.
 - In group/orgy mode, each submitted name is saved as its own entry, linked by a shared group id.
 
 ## Run
@@ -66,3 +67,12 @@ If using Cloudflare Access, set:
 CF_ACCESS_EMAILS=you@example.com,friend@example.com
 ```
 When this is set, app login form is bypassed and Cloudflare identity header is used.
+
+
+## Group / Orgy input format
+In **Group / Orgy** mode, enter one person per line in this format:
+
+`Name|top|bottom|sucked|rating|nationality|notes`
+
+Example:
+`Marco|1|0|both|5|Italian|great kisser`
