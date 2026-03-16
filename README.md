@@ -8,13 +8,16 @@ A private web app for two people to track hookups and view shared + individual s
 - Group/orgy flow:
   - choose encounter type (`single` or `orgy`)
   - set orgy count
-  - add comma-separated names
+  - add comma-separated names (auto-splits to individual entries)
   - optional per-person/group details
 - Fields: names, date, location, nationality, photo upload, top/bottom, sucked mode (give/receive/both), rating (1-5), notes.
 - Dashboard with emoji summaries and **most popular nationality**.
 - By-person summary now includes totals for top/bottom/suck aggregate.
 - Dedicated **By person** and **My list** views.
 - CSV export endpoint (`/export.csv`).
+- Photo gallery page (`/gallery`) for all uploaded photos.
+- Backup safeguard: upload a previously exported CSV to restore/append entries.
+- In group/orgy mode, each submitted name is saved as its own entry, linked by a shared group id.
 
 ## Run
 ```bash

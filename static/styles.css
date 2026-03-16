@@ -50,3 +50,6 @@ th, td { text-align: left; border-bottom: 1px solid #2d385a; padding: .58rem; }
 .table-wrap { overflow-x: auto; border: 1px solid #2d385a; border-radius: 10px; }
 .table-wrap table { min-width: 620px; }
 form label { display: grid; gap: .35rem; }
+
+.gallery-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+.thumb { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; border-radius: 10px; border: 1px solid #2d385a; }
