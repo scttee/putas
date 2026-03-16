@@ -87,6 +87,21 @@ def init_db() -> None:
             expires_at TEXT NOT NULL,
             created_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS entry_likes (
+            hookup_id INTEGER NOT NULL,
+            username TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(hookup_id, username)
+        );
+
+        CREATE TABLE IF NOT EXISTS entry_comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            hookup_id INTEGER NOT NULL,
+            username TEXT NOT NULL,
+            comment TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
         """
     )
     ensure_columns(db)
@@ -242,11 +257,20 @@ def dashboard_script() -> str:
 def render_dashboard(username: str, error: str = "", success: str = "") -> bytes:
     db = sqlite3.connect(DB_PATH)
     db.row_factory = sqlite3.Row
-    totals = db.execute("SELECT COUNT(*) total, COALESCE(SUM(topped),0) topped, COALESCE(SUM(bottomed),0) bottomed, ROUND(AVG(rating),2) avg_rating FROM hookups").fetchone()
+    totals = db.execute("SELECT COUNT(*) total_all, COALESCE(SUM(CASE WHEN repeat_partner = 0 THEN 1 ELSE 0 END),0) total_new, COALESCE(SUM(topped),0) topped, COALESCE(SUM(bottomed),0) bottomed, ROUND(AVG(rating),2) avg_rating FROM hookups").fetchone()
     popular_nat = db.execute("SELECT nationality, COUNT(*) total FROM hookups WHERE COALESCE(TRIM(nationality),'')<>'' GROUP BY nationality ORDER BY total DESC, nationality ASC LIMIT 1").fetchone()
     by_sucked = db.execute("SELECT sucked_mode, COUNT(*) total FROM hookups GROUP BY sucked_mode").fetchall()
-    per_user = db.execute("SELECT recorder, COUNT(*) total, COALESCE(SUM(topped),0) topped, COALESCE(SUM(bottomed),0) bottomed, COALESCE(SUM(CASE WHEN sucked_mode <> 'none' THEN 1 ELSE 0 END),0) sucked_total, ROUND(AVG(rating),2) avg_rating FROM hookups GROUP BY recorder ORDER BY total DESC").fetchall()
+    per_user = db.execute("SELECT recorder, COALESCE(SUM(CASE WHEN repeat_partner = 0 THEN 1 ELSE 0 END),0) total, COALESCE(SUM(topped),0) topped, COALESCE(SUM(bottomed),0) bottomed, COALESCE(SUM(CASE WHEN sucked_mode <> 'none' THEN 1 ELSE 0 END),0) sucked_total, ROUND(AVG(rating),2) avg_rating FROM hookups GROUP BY recorder ORDER BY total DESC").fetchall()
     entries = db.execute("SELECT * FROM hookups ORDER BY meetup_date DESC, id DESC LIMIT 5").fetchall()
+    entry_ids = [r['id'] for r in entries]
+    likes = {}
+    comments = {}
+    if entry_ids:
+        placeholders = ','.join('?' for _ in entry_ids)
+        for lr in db.execute(f"SELECT hookup_id, COUNT(*) total FROM entry_likes WHERE hookup_id IN ({placeholders}) GROUP BY hookup_id", entry_ids):
+            likes[lr['hookup_id']] = lr['total']
+        for cr in db.execute(f"SELECT hookup_id, username, comment FROM entry_comments WHERE hookup_id IN ({placeholders}) ORDER BY id DESC", entry_ids):
+            comments.setdefault(cr['hookup_id'], []).append((cr['username'], cr['comment']))
     db.close()
 
     sucked_map = {r["sucked_mode"]: r["total"] for r in by_sucked}
@@ -260,8 +284,31 @@ def render_dashboard(username: str, error: str = "", success: str = "") -> bytes
         protection_line = f"<p>🛡️ {html.escape(r['protection_used'])}</p>" if r["protection_used"] else ""
         substances_line = f"<p>💊 {html.escape(r['substances'])}</p>" if r["substances"] else ""
         notes_line = f"<p>📝 {html.escape(r['notes'])}</p>" if r["notes"] else ""
+        repeat_badge = "<span class='pill'>🔁 Repeat</span>" if r['repeat_partner'] else ""
+        like_count = likes.get(r['id'], 0)
+        comment_rows = comments.get(r['id'], [])[:3]
+        comments_html = "".join(
+            f"<p class='muted'>💬 <strong>{html.escape(c_user)}</strong>: {html.escape(c_text)}</p>"
+            for c_user, c_text in comment_rows
+        )
+        social_html = f"""
+        <div class='entry-social stack-sm'>
+          <div class='row'>
+            <form method='post' action='/like' class='inline-form'>
+              <input type='hidden' name='entry_id' value='{r['id']}'>
+              <button type='submit' class='btn secondary'>❤️ Like ({like_count})</button>
+            </form>
+          </div>
+          <form method='post' action='/comment' class='row comment-form'>
+            <input type='hidden' name='entry_id' value='{r['id']}'>
+            <input name='comment' maxlength='240' placeholder='Add a comment...'>
+            <button type='submit' class='btn secondary'>Post</button>
+          </form>
+          <div class='comments'>{comments_html}</div>
+        </div>
+        """
         latest.append(
-            f"<article class='entry stack-sm hover-up'><div class='row between'><strong>{html.escape(r['partner_names'])}</strong><span class='muted'>📅 {html.escape(r['meetup_date'])}</span></div><small>📍 {html.escape(r['location'] or 'No location')} · 🌍 {html.escape(r['nationality'] or 'Unknown')} · 👤 {html.escape(r['recorder'])}</small><small>{orgy_tag}{group_line} · {emoji_summary(r)} · {html.escape(r['mood'] or '—')}</small>{photo_link}{protection_line}{substances_line}{notes_line}</article>"
+            f"<article class='entry stack-sm hover-up'><div class='row between'><strong>{html.escape(r['partner_names'])}</strong><span class='muted'>📅 {html.escape(r['meetup_date'])}</span></div><small>📍 {html.escape(r['location'] or 'No location')} · 🌍 {html.escape(r['nationality'] or 'Unknown')} · 👤 {html.escape(r['recorder'])}</small><small>{orgy_tag}{group_line} · {emoji_summary(r)} · {html.escape(r['mood'] or '—')}</small>{repeat_badge}{photo_link}{protection_line}{substances_line}{notes_line}{social_html}</article>"
         )
 
     return page(
@@ -272,7 +319,7 @@ def render_dashboard(username: str, error: str = "", success: str = "") -> bytes
 {'<p class="success">'+html.escape(success)+'</p>' if success else ''}
 
 <section class='grid stats block-gap'>
-  <article class='card stack-sm hover-up'><h3>All Encounters</h3><p class='big'>🔥 {totals['total']}</p></article>
+  <article class='card stack-sm hover-up'><h3>New People</h3><p class='big'>🆕 {totals['total_new']}</p><small class='muted'>All logs: {totals['total_all']}</small></article>
   <article class='card stack-sm hover-up'><h3>Top / Bottom</h3><p class='big'>⬆️ {totals['topped']} · ⬇️ {totals['bottomed']}</p></article>
   <article class='card stack-sm hover-up'><h3>Avg Rating (5)</h3><p class='big'>⭐ {totals['avg_rating'] or '-'}</p></article>
   <article class='card stack-sm hover-up'><h3>Sucked</h3><p class='small'>Give 👄➡️ {sucked_map.get('give',0)}<br>Receive 👄⬅️ {sucked_map.get('receive',0)}<br>Both 👄🔁 {sucked_map.get('both',0)}</p></article>
@@ -346,7 +393,7 @@ def render_dashboard(username: str, error: str = "", success: str = "") -> bytes
 def render_people(username: str) -> bytes:
     db = sqlite3.connect(DB_PATH)
     db.row_factory = sqlite3.Row
-    users = db.execute("SELECT recorder, COUNT(*) total, COALESCE(SUM(topped),0) topped, COALESCE(SUM(bottomed),0) bottomed, COALESCE(SUM(CASE WHEN sucked_mode <> 'none' THEN 1 ELSE 0 END),0) sucked_total, ROUND(AVG(rating),2) avg_rating FROM hookups GROUP BY recorder ORDER BY recorder").fetchall()
+    users = db.execute("SELECT recorder, COALESCE(SUM(CASE WHEN repeat_partner = 0 THEN 1 ELSE 0 END),0) total, COALESCE(SUM(topped),0) topped, COALESCE(SUM(bottomed),0) bottomed, COALESCE(SUM(CASE WHEN sucked_mode <> 'none' THEN 1 ELSE 0 END),0) sucked_total, ROUND(AVG(rating),2) avg_rating FROM hookups GROUP BY recorder ORDER BY recorder").fetchall()
     db.close()
     cards = "".join(f"<a class='card link-card stack-sm hover-up' href='/person?name={html.escape(u['recorder'])}'><h3>👤 {html.escape(u['recorder'])}</h3><p>{u['total']} entries · ⬆️ {u['topped']} · ⬇️ {u['bottomed']} · 👄 {u['sucked_total']} · ⭐ {u['avg_rating'] or '-'}</p></a>" for u in users) or "<p>No entries yet.</p>"
     return page("By person", f"{nav(username)}<section class='card stack block-gap'><div class='section-title'><h2>By person</h2><span class='muted'>Tap a card for full list</span></div><section class='grid stats'>{cards}</section></section>")
@@ -365,8 +412,9 @@ def render_person_list(username: str, person: str) -> bytes:
         protection_line = f"<p>🛡️ {html.escape(r['protection_used'])}</p>" if r["protection_used"] else ""
         substances_line = f"<p>💊 {html.escape(r['substances'])}</p>" if r["substances"] else ""
         notes_line = f"<p>📝 {html.escape(r['notes'])}</p>" if r["notes"] else ""
+        repeat_badge = "<span class='pill'>🔁 Repeat</span>" if r['repeat_partner'] else ""
         items.append(
-            f"<article class='entry stack-sm'><strong>{html.escape(r['partner_names'])}</strong><small>📅 {html.escape(r['meetup_date'])} · 📍 {html.escape(r['location'] or 'No location')}</small><small>🌍 {html.escape(r['nationality'] or 'Unknown')} · {orgy_tag}{group_line} · {emoji_summary(r)}</small>{photo_link}{protection_line}{substances_line}{notes_line}</article>"
+            f"<article class='entry stack-sm'><strong>{html.escape(r['partner_names'])}</strong><small>📅 {html.escape(r['meetup_date'])} · 📍 {html.escape(r['location'] or 'No location')}</small><small>🌍 {html.escape(r['nationality'] or 'Unknown')} · {orgy_tag}{group_line} · {emoji_summary(r)}</small>{repeat_badge}{photo_link}{protection_line}{substances_line}{notes_line}</article>"
         )
     return page("Person list", f"{nav(username)}<section class='card stack block-gap'><h2>Entries for {html.escape(person)}</h2><div class='entries'>{''.join(items) or '<p>No entries yet.</p>'}</div></section>")
 
@@ -645,6 +693,38 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_html(render_dashboard(user, success=f"Saved {len(rows)} individual entr{'y' if len(rows)==1 else 'ies'} ✅"), 201); return
             except Exception as exc:
                 self.send_html(render_dashboard(user, error=f"Could not save entry: {exc}"), 400); return
+
+
+        if path == '/like':
+            if not user: self.redirect('/login'); return
+            data = self.form_data()
+            entry_id = (data.get('entry_id') or '').strip()
+            if not entry_id.isdigit():
+                self.send_html(render_dashboard(user, error='Invalid entry id'), 400); return
+            db = sqlite3.connect(DB_PATH)
+            found = db.execute("SELECT 1 FROM hookups WHERE id=?", (int(entry_id),)).fetchone()
+            if not found:
+                db.close()
+                self.send_html(render_dashboard(user, error='Entry not found'), 404); return
+            db.execute("INSERT OR IGNORE INTO entry_likes (hookup_id, username, created_at) VALUES (?, ?, ?)", (int(entry_id), user, now_utc().isoformat(timespec='seconds')))
+            db.commit(); db.close()
+            self.send_html(render_dashboard(user, success='Liked ❤️'), 201); return
+
+        if path == '/comment':
+            if not user: self.redirect('/login'); return
+            data = self.form_data()
+            entry_id = (data.get('entry_id') or '').strip()
+            text = (data.get('comment') or '').strip()
+            if not entry_id.isdigit() or not text:
+                self.send_html(render_dashboard(user, error='Comment requires entry and text'), 400); return
+            db = sqlite3.connect(DB_PATH)
+            found = db.execute("SELECT 1 FROM hookups WHERE id=?", (int(entry_id),)).fetchone()
+            if not found:
+                db.close()
+                self.send_html(render_dashboard(user, error='Entry not found'), 404); return
+            db.execute("INSERT INTO entry_comments (hookup_id, username, comment, created_at) VALUES (?, ?, ?, ?)", (int(entry_id), user, text[:240], now_utc().isoformat(timespec='seconds')))
+            db.commit(); db.close()
+            self.send_html(render_dashboard(user, success='Comment added 💬'), 201); return
 
         if path == '/import.csv':
             if not user: self.redirect('/login'); return
