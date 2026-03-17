@@ -288,7 +288,7 @@ def dashboard_script() -> str:
   }
 
   function toggle(){
-    const isGroup = mode.value === 'orgy' || mode.value === 'group';
+    const isGroup = mode.value === 'orgy' || mode.value === 'group' || mode.value === 'cruising';
     single.style.display = isGroup ? 'none' : 'grid';
     group.style.display = isGroup ? 'grid' : 'none';
     if (isGroup) renderGroupForms();
@@ -759,7 +759,7 @@ class Handler(BaseHTTPRequestHandler):
                 orgy_count = None
                 orgy_details = data.get('orgy_details','').strip()
 
-                if encounter in {'single', 'cruising'}:
+                if encounter == 'single':
                     name = data.get('single_name','').strip()
                     if not name: raise ValueError('Single mode needs a name')
                     rating = int(data.get('single_rating','').strip()) if data.get('single_rating','').strip() else None

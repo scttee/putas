@@ -13,7 +13,7 @@ A private web app for two people to track hookups and view shared + individual s
 - Encounter type flow:
   - pick **single / group / orgy / cruising** immediately after date
   - single mode has one person form
-  - group + orgy modes ask count and generate that many per-person forms
+  - group + orgy + cruising modes ask count and generate that many per-person forms
 - Additional tracking fields:
   - protection used 🛡️
   - substances 💊
