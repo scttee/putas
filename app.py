@@ -197,16 +197,26 @@ def page(title: str, body: str) -> bytes:
 def nav(username: str) -> str:
     return f"""
     <header class='header glass'>
-      <h1>🔥 Hookup Tracker</h1>
-      <div class='row'>
+      <div class='brand-row'>
+        <h1>🔥 Hookup Tracker</h1>
         <span class='pill'>👤 {html.escape(username)}</span>
-        <a class='btn secondary' href='/'>Dashboard</a>
-        <a class='btn secondary' href='/person?name={html.escape(username)}'>My list</a>
-        <a class='btn secondary' href='/people'>By person</a>
-        <a class='btn secondary' href='/health'>Health</a>
-        <a class='btn secondary' href='/gallery'>Gallery</a>
-        <a class='btn secondary' href='/backup'>CSV/Backup</a>
-        <form method='post' action='/logout'><button class='secondary' type='submit'>Logout</button></form>
+      </div>
+      <details class='menu'>
+        <summary class='menu-trigger'>☰ Menu</summary>
+        <nav class='menu-panel'>
+          <a class='menu-link' href='/'>🏠 Dashboard</a>
+          <a class='menu-link' href='/person?name={html.escape(username)}'>🧾 My list</a>
+          <a class='menu-link' href='/people'>👥 By person</a>
+          <a class='menu-link' href='/health'>🧪 Health</a>
+          <a class='menu-link' href='/gallery'>🖼️ Gallery</a>
+          <a class='menu-link' href='/backup'>💾 CSV/Backup</a>
+          <form method='post' action='/logout'><button class='menu-logout' type='submit'>🚪 Logout</button></form>
+        </nav>
+      </details>
+      <div class='quick-links'>
+        <a class='chip-link' href='/'>Dashboard</a>
+        <a class='chip-link' href='/person?name={html.escape(username)}'>My list</a>
+        <a class='chip-link' href='/people'>By person</a>
       </div>
     </header>
     """

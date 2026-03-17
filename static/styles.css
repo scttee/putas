@@ -3,7 +3,27 @@
 body { margin: 0; background: radial-gradient(circle at top, #16203b 0%, #0b1020 45%); color: #f5f7ff; }
 a { color: #a8c7ff; }
 .container { max-width: 1120px; margin: 1rem auto; padding: 0 .85rem 2rem; }
-.header { display: flex; flex-wrap: wrap; gap: .8rem; align-items: center; justify-content: space-between; margin-bottom: 1rem; padding: .9rem; border: 1px solid #2a3557; border-radius: 14px; }
+.header { display: grid; grid-template-columns: 1fr auto; gap: .55rem .7rem; align-items: center; margin-bottom: 1rem; padding: .72rem .8rem; border: 1px solid #2a3557; border-radius: 14px; }
+.header h1 { margin: 0; font-size: 1.02rem; }
+.brand-row { display: flex; align-items: center; gap: .55rem; min-width: 0; }
+.menu { position: relative; }
+.menu-trigger { list-style: none; cursor: pointer; border: 1px solid #3d4c77; border-radius: 10px; padding: .45rem .65rem; background: #111a30; user-select: none; }
+.menu-trigger::-webkit-details-marker { display: none; }
+.menu-panel {
+  position: absolute; right: 0; top: calc(100% + .35rem); z-index: 8;
+  min-width: 220px; background: #0f162b; border: 1px solid #2d385a; border-radius: 12px;
+  padding: .4rem; display: grid; gap: .35rem; box-shadow: 0 10px 22px rgba(0,0,0,.35);
+}
+.menu-link, .menu-logout {
+  display: block; width: 100%; border: 1px solid #2d385a; border-radius: 9px; padding: .48rem .58rem;
+  background: #121c33; color: #f5f7ff; text-decoration: none; text-align: left; min-height: unset; font-size: .94rem;
+}
+.menu-logout { cursor: pointer; }
+.quick-links { grid-column: 1 / -1; display: flex; gap: .42rem; overflow-x: auto; padding-bottom: .15rem; scrollbar-width: thin; }
+.chip-link {
+  white-space: nowrap; text-decoration: none; color: #d9e5ff; border: 1px solid #2f3a5f;
+  border-radius: 999px; padding: .3rem .6rem; font-size: .86rem; background: #111a30;
+}
 .glass { background: rgba(20, 30, 55, .6); backdrop-filter: blur(6px); }
 .row { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
 .between { justify-content: space-between; }
@@ -63,4 +83,6 @@ form label { display: grid; gap: .35rem; }
   .container { padding: 0 .68rem 1.3rem; }
   .stats, .form-grid { grid-template-columns: 1fr; }
   .table-wrap table { min-width: 500px; }
+  .header { grid-template-columns: 1fr auto; }
+  .menu-panel { right: -4px; }
 }

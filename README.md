@@ -53,6 +53,27 @@ Includes:
 - `Procfile` (`web: python3 app.py`)
 - `railway.json` (explicit start + healthcheck)
 
+### Enable persistent storage on Railway (beginner steps)
+If you do **not** add a volume, Railway can wipe uploaded photos / DB files when redeploying.
+
+1. Open your Railway project.
+2. Click your service (the one running this app).
+3. Go to the **Volumes** tab.
+4. Click **New Volume**.
+5. Mount path: `/data`
+6. Save/apply.
+7. Go to service **Variables** and set:
+   - `DATA_DIR=/data`
+   - `UPLOAD_DIR=/data/uploads`
+   - `DB_PATH=/data/data.db`
+8. Redeploy the service.
+9. Verify in app:
+   - Add a test entry with a photo.
+   - Redeploy again.
+   - Confirm entry + photo are still there.
+
+Tip: keep using CSV export from `/backup` as an extra safety backup.
+
 ## Optional Cloudflare Access
 ```bash
 CF_ACCESS_EMAILS=you@example.com,friend@example.com
