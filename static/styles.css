@@ -48,6 +48,7 @@ th, td { text-align: left; border-bottom: 1px solid #2d385a; padding: .52rem; }
 form label { display: grid; gap: .35rem; }
 .gallery-grid { display: grid; gap: .8rem; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
 .thumb { width: 100%; aspect-ratio: 1/1; object-fit: cover; border-radius: 10px; border: 1px solid #2d385a; background: #0f162b; }
+.missing-thumb { display: grid; place-items: center; color: #b7c4e6; border-style: dashed; }
 
 .fade-in { animation: fadeIn .45s ease; }
 .floaty { animation: floatIn .5s ease; }

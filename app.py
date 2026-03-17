@@ -7,7 +7,7 @@ import html
 import os
 import secrets
 import sqlite3
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from email.parser import BytesParser
 from email.policy import default
 from http import cookies
@@ -28,7 +28,7 @@ PASSWORD_SALT = os.environ.get("PASSWORD_SALT", "change-this-salt")
 CF_ACCESS_EMAILS = {e.strip().lower() for e in os.environ.get("CF_ACCESS_EMAILS", "").split(",") if e.strip()}
 
 SUCKED_OPTIONS = {"none", "give", "receive", "both"}
-ENCOUNTER_OPTIONS = {"single", "orgy"}
+ENCOUNTER_OPTIONS = {"single", "group", "orgy", "cruising"}
 MOOD_OPTIONS = {"amazing", "good", "mid", "regret"}
 
 
@@ -102,6 +102,13 @@ def init_db() -> None:
             comment TEXT NOT NULL,
             created_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS std_checks (
+            username TEXT PRIMARY KEY,
+            checked_on TEXT NOT NULL,
+            notes TEXT,
+            updated_at TEXT NOT NULL
+        );
         """
     )
     ensure_columns(db)
@@ -156,6 +163,31 @@ def emoji_summary(row: sqlite3.Row) -> str:
     return " ".join(out) or "—"
 
 
+def encounter_label(row: sqlite3.Row) -> str:
+    kind = (row["encounter_type"] or "single").lower()
+    if kind == "group":
+        return f"👥 Group x{row['orgy_count']}" if row["orgy_count"] else "👥 Group"
+    if kind == "orgy":
+        return f"🎉 Orgy x{row['orgy_count']}" if row["orgy_count"] else "🎉 Orgy"
+    if kind == "cruising":
+        return "🚶 Cruising"
+    return "👤 Single"
+
+
+def std_due_message(checked_on: str) -> str:
+    try:
+        check_date = date.fromisoformat(checked_on)
+    except Exception:
+        return "Unknown"
+    due = check_date + timedelta(days=90)
+    days = (due - now_utc().date()).days
+    if days < 0:
+        return f"⚠️ Overdue by {abs(days)} day(s)"
+    if days == 0:
+        return "⏰ Due today"
+    return f"✅ {days} day(s) left"
+
+
 def page(title: str, body: str) -> bytes:
     styles = (BASE_DIR / "static/styles.css").read_text(encoding="utf-8")
     return f"""<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
@@ -171,6 +203,7 @@ def nav(username: str) -> str:
         <a class='btn secondary' href='/'>Dashboard</a>
         <a class='btn secondary' href='/person?name={html.escape(username)}'>My list</a>
         <a class='btn secondary' href='/people'>By person</a>
+        <a class='btn secondary' href='/health'>Health</a>
         <a class='btn secondary' href='/gallery'>Gallery</a>
         <a class='btn secondary' href='/backup'>CSV/Backup</a>
         <form method='post' action='/logout'><button class='secondary' type='submit'>Logout</button></form>
@@ -240,7 +273,7 @@ def dashboard_script() -> str:
   }
 
   function toggle(){
-    const isGroup = mode.value === 'orgy';
+    const isGroup = mode.value === 'orgy' || mode.value === 'group';
     single.style.display = isGroup ? 'none' : 'grid';
     group.style.display = isGroup ? 'grid' : 'none';
     if (isGroup) renderGroupForms();
@@ -260,6 +293,8 @@ def render_dashboard(username: str, error: str = "", success: str = "") -> bytes
     totals = db.execute("SELECT COUNT(*) total_all, COALESCE(SUM(CASE WHEN repeat_partner = 0 THEN 1 ELSE 0 END),0) total_new, COALESCE(SUM(topped),0) topped, COALESCE(SUM(bottomed),0) bottomed, ROUND(AVG(rating),2) avg_rating FROM hookups").fetchone()
     popular_nat = db.execute("SELECT nationality, COUNT(*) total FROM hookups WHERE COALESCE(TRIM(nationality),'')<>'' GROUP BY nationality ORDER BY total DESC, nationality ASC LIMIT 1").fetchone()
     by_sucked = db.execute("SELECT sucked_mode, COUNT(*) total FROM hookups GROUP BY sucked_mode").fetchall()
+    weekly = db.execute("SELECT COUNT(*) total_all, COALESCE(SUM(CASE WHEN repeat_partner = 0 THEN 1 ELSE 0 END),0) total_new, COALESCE(SUM(topped),0) topped, COALESCE(SUM(bottomed),0) bottomed FROM hookups WHERE meetup_date >= date('now','-6 day')").fetchone()
+    weekly_users = db.execute("SELECT recorder, COUNT(*) total FROM hookups WHERE meetup_date >= date('now','-6 day') GROUP BY recorder ORDER BY total DESC, recorder ASC").fetchall()
     per_user = db.execute("SELECT recorder, COALESCE(SUM(CASE WHEN repeat_partner = 0 THEN 1 ELSE 0 END),0) total, COALESCE(SUM(topped),0) topped, COALESCE(SUM(bottomed),0) bottomed, COALESCE(SUM(CASE WHEN sucked_mode <> 'none' THEN 1 ELSE 0 END),0) sucked_total, ROUND(AVG(rating),2) avg_rating FROM hookups GROUP BY recorder ORDER BY total DESC").fetchall()
     entries = db.execute("SELECT * FROM hookups ORDER BY meetup_date DESC, id DESC LIMIT 5").fetchall()
     entry_ids = [r['id'] for r in entries]
@@ -308,8 +343,10 @@ def render_dashboard(username: str, error: str = "", success: str = "") -> bytes
         </div>
         """
         latest.append(
-            f"<article class='entry stack-sm hover-up'><div class='row between'><strong>{html.escape(r['partner_names'])}</strong><span class='muted'>📅 {html.escape(r['meetup_date'])}</span></div><small>📍 {html.escape(r['location'] or 'No location')} · 🌍 {html.escape(r['nationality'] or 'Unknown')} · 👤 {html.escape(r['recorder'])}</small><small>{orgy_tag}{group_line} · {emoji_summary(r)} · {html.escape(r['mood'] or '—')}</small>{repeat_badge}{photo_link}{protection_line}{substances_line}{notes_line}{social_html}</article>"
+            f"<article class='entry stack-sm hover-up'><div class='row between'><strong>{html.escape(r['partner_names'])}</strong><span class='muted'>📅 {html.escape(r['meetup_date'])}</span></div><small>📍 {html.escape(r['location'] or 'No location')} · 🌍 {html.escape(r['nationality'] or 'Unknown')} · 👤 {html.escape(r['recorder'])}</small><small>{encounter_label(r)}{group_line} · {emoji_summary(r)} · {html.escape(r['mood'] or '—')}</small>{repeat_badge}{photo_link}{protection_line}{substances_line}{notes_line}{social_html}</article>"
         )
+
+    weekly_user_line = " · ".join(f"{html.escape(r['recorder'])}: {r['total']}" for r in weekly_users) or "No logs this week"
 
     return page(
         "Dashboard",
@@ -326,6 +363,13 @@ def render_dashboard(username: str, error: str = "", success: str = "") -> bytes
   <article class='card stack-sm hover-up'><h3>Top Nationality</h3><p class='big'>🌍 {html.escape(popular_nat['nationality']) if popular_nat else '-'}</p></article>
 </section>
 
+<section class='card stack-sm block-gap'>
+  <h3>📆 Weekly dashboard (last 7 days)</h3>
+  <p class='big'>🆕 {weekly['total_new']} new · 📝 {weekly['total_all']} logs</p>
+  <p>⬆️ {weekly['topped']} · ⬇️ {weekly['bottomed']}</p>
+  <p class='muted'>{weekly_user_line}</p>
+</section>
+
 <section class='card stack block-gap'>
   <div class='section-title'><h2>Individual summary</h2><a class='btn secondary' href='/people'>Open full view</a></div>
   <div class='table-wrap'><table><thead><tr><th>Person</th><th>Count</th><th>Top</th><th>Bottom</th><th>Suck*</th><th>Avg ⭐</th></tr></thead><tbody>{user_rows}</tbody></table></div>
@@ -339,7 +383,9 @@ def render_dashboard(username: str, error: str = "", success: str = "") -> bytes
     <label>Encounter type
       <select id='encounter_type' name='encounter_type'>
         <option value='single'>Single</option>
-        <option value='orgy'>Group / Orgy</option>
+        <option value='group'>Group</option>
+        <option value='orgy'>Orgy</option>
+        <option value='cruising'>Cruising</option>
       </select>
     </label>
     <label>Location <input name='location'></label>
@@ -393,20 +439,21 @@ def render_dashboard(username: str, error: str = "", success: str = "") -> bytes
 def render_people(username: str) -> bytes:
     db = sqlite3.connect(DB_PATH)
     db.row_factory = sqlite3.Row
-    users = db.execute("SELECT recorder, COALESCE(SUM(CASE WHEN repeat_partner = 0 THEN 1 ELSE 0 END),0) total, COALESCE(SUM(topped),0) topped, COALESCE(SUM(bottomed),0) bottomed, COALESCE(SUM(CASE WHEN sucked_mode <> 'none' THEN 1 ELSE 0 END),0) sucked_total, ROUND(AVG(rating),2) avg_rating FROM hookups GROUP BY recorder ORDER BY recorder").fetchall()
+    users = db.execute("SELECT recorder, COALESCE(SUM(CASE WHEN repeat_partner = 0 THEN 1 ELSE 0 END),0) total, COUNT(*) total_logs, COALESCE(SUM(CASE WHEN repeat_partner = 1 THEN 1 ELSE 0 END),0) repeats, COALESCE(SUM(topped),0) topped, COALESCE(SUM(bottomed),0) bottomed, COALESCE(SUM(CASE WHEN sucked_mode <> 'none' THEN 1 ELSE 0 END),0) sucked_total, ROUND(AVG(rating),2) avg_rating FROM hookups GROUP BY recorder ORDER BY recorder").fetchall()
     db.close()
-    cards = "".join(f"<a class='card link-card stack-sm hover-up' href='/person?name={html.escape(u['recorder'])}'><h3>👤 {html.escape(u['recorder'])}</h3><p>{u['total']} entries · ⬆️ {u['topped']} · ⬇️ {u['bottomed']} · 👄 {u['sucked_total']} · ⭐ {u['avg_rating'] or '-'}</p></a>" for u in users) or "<p>No entries yet.</p>"
+    cards = "".join(f"<a class='card link-card stack-sm hover-up' href='/person?name={html.escape(u['recorder'])}'><h3>👤 {html.escape(u['recorder'])}</h3><p>🆕 {u['total']} · 🔁 {u['repeats']} · 📝 {u['total_logs']}</p><p>⬆️ {u['topped']} · ⬇️ {u['bottomed']} · 👄 {u['sucked_total']} · ⭐ {u['avg_rating'] or '-'}</p></a>" for u in users) or "<p>No entries yet.</p>"
     return page("By person", f"{nav(username)}<section class='card stack block-gap'><div class='section-title'><h2>By person</h2><span class='muted'>Tap a card for full list</span></div><section class='grid stats'>{cards}</section></section>")
 
 
 def render_person_list(username: str, person: str) -> bytes:
     db = sqlite3.connect(DB_PATH)
     db.row_factory = sqlite3.Row
+    summary = db.execute("SELECT COALESCE(SUM(CASE WHEN repeat_partner = 0 THEN 1 ELSE 0 END),0) total_new, COUNT(*) total_logs, COALESCE(SUM(CASE WHEN repeat_partner = 1 THEN 1 ELSE 0 END),0) repeats, COALESCE(SUM(topped),0) topped, COALESCE(SUM(bottomed),0) bottomed, COALESCE(SUM(CASE WHEN sucked_mode <> 'none' THEN 1 ELSE 0 END),0) sucked_total, ROUND(AVG(rating),2) avg_rating, MAX(meetup_date) last_date FROM hookups WHERE recorder = ?", (person,)).fetchone()
     rows = db.execute("SELECT * FROM hookups WHERE recorder = ? ORDER BY meetup_date DESC, id DESC", (person,)).fetchall()
     db.close()
     items = []
     for r in rows:
-        orgy_tag = f"🎉 Group x{r['orgy_count']}" if r["encounter_type"] == "orgy" and r["orgy_count"] else "👤 Single"
+        orgy_tag = encounter_label(r)
         group_line = f" · 🧷 {html.escape(r['encounter_group_id'])}" if r["encounter_group_id"] else ""
         photo_link = f"<a href='/uploads/{html.escape(r['photo_path'])}' target='_blank'>📸 View photo</a>" if r["photo_path"] else ""
         protection_line = f"<p>🛡️ {html.escape(r['protection_used'])}</p>" if r["protection_used"] else ""
@@ -416,7 +463,15 @@ def render_person_list(username: str, person: str) -> bytes:
         items.append(
             f"<article class='entry stack-sm'><strong>{html.escape(r['partner_names'])}</strong><small>📅 {html.escape(r['meetup_date'])} · 📍 {html.escape(r['location'] or 'No location')}</small><small>🌍 {html.escape(r['nationality'] or 'Unknown')} · {orgy_tag}{group_line} · {emoji_summary(r)}</small>{repeat_badge}{photo_link}{protection_line}{substances_line}{notes_line}</article>"
         )
-    return page("Person list", f"{nav(username)}<section class='card stack block-gap'><h2>Entries for {html.escape(person)}</h2><div class='entries'>{''.join(items) or '<p>No entries yet.</p>'}</div></section>")
+    summary_cards = f"""
+    <section class='grid stats block-gap'>
+      <article class='card stack-sm'><h3>🆕 New people</h3><p class='big'>{summary['total_new']}</p><small class='muted'>All logs: {summary['total_logs']}</small></article>
+      <article class='card stack-sm'><h3>🔁 Repeats</h3><p class='big'>{summary['repeats']}</p></article>
+      <article class='card stack-sm'><h3>⬆️ / ⬇️ / 👄</h3><p class='big'>{summary['topped']} / {summary['bottomed']} / {summary['sucked_total']}</p></article>
+      <article class='card stack-sm'><h3>⭐ Avg rating</h3><p class='big'>{summary['avg_rating'] or '-'}</p><small class='muted'>Last: {html.escape(summary['last_date'] or '-')}</small></article>
+    </section>
+    """
+    return page("Person list", f"{nav(username)}<section class='card stack block-gap'><h2>{html.escape(person)} summary</h2>{summary_cards}</section><section class='card stack block-gap'><h2>Entries for {html.escape(person)}</h2><div class='entries'>{''.join(items) or '<p>No entries yet.</p>'}</div></section>")
 
 
 def render_gallery(username: str) -> bytes:
@@ -424,8 +479,18 @@ def render_gallery(username: str) -> bytes:
     db.row_factory = sqlite3.Row
     rows = db.execute("SELECT id, partner_names, recorder, meetup_date, photo_path, location FROM hookups WHERE COALESCE(photo_path,'') <> '' ORDER BY meetup_date DESC, id DESC").fetchall()
     db.close()
-    tiles = "".join(f"<article class='card stack-sm hover-up'><a href='/uploads/{html.escape(r['photo_path'])}' target='_blank'><img class='thumb' loading='lazy' decoding='async' src='/uploads/{html.escape(r['photo_path'])}' alt='photo {r['id']}'></a><small>👤 {html.escape(r['partner_names'])} · {html.escape(r['recorder'])}</small><small>📅 {html.escape(r['meetup_date'])} · 📍 {html.escape(r['location'] or 'No location')}</small></article>" for r in rows) or "<p>No uploaded photos yet.</p>"
-    return page("Gallery", f"{nav(username)}<section class='card stack block-gap'><div class='section-title'><h2>Photo gallery</h2><span class='muted'>{len(rows)} photos</span></div><div class='gallery-grid'>{tiles}</div></section>")
+    tiles = []
+    missing = 0
+    for r in rows:
+        file_exists = (UPLOAD_DIR / Path(r['photo_path']).name).exists() if r['photo_path'] else False
+        if file_exists:
+            preview = f"<a href='/uploads/{html.escape(r['photo_path'])}' target='_blank'><img class='thumb' loading='lazy' decoding='async' src='/uploads/{html.escape(r['photo_path'])}' alt='photo {r['id']}'></a>"
+        else:
+            missing += 1
+            preview = "<div class='thumb missing-thumb'>⚠️ Missing file</div>"
+        tiles.append(f"<article class='card stack-sm hover-up'>{preview}<small>👤 {html.escape(r['partner_names'])} · {html.escape(r['recorder'])}</small><small>📅 {html.escape(r['meetup_date'])} · 📍 {html.escape(r['location'] or 'No location')}</small></article>")
+    warning = f"<p class='muted'>⚠️ {missing} photo(s) missing on disk. Use persistent storage on Railway to keep uploads across deploys.</p>" if missing else ""
+    return page("Gallery", f"{nav(username)}<section class='card stack block-gap'><div class='section-title'><h2>Photo gallery</h2><span class='muted'>{len(rows)} photos</span></div>{warning}<div class='gallery-grid'>{''.join(tiles) or '<p>No uploaded photos yet.</p>'}</div></section>")
 
 
 def render_backup(username: str, error: str = "", success: str = "") -> bytes:
@@ -444,6 +509,45 @@ def render_backup(username: str, error: str = "", success: str = "") -> bytes:
           <form method='post' action='/import.csv' enctype='multipart/form-data' class='stack-sm'>
             <label>Upload backup CSV <input type='file' name='backup_csv' accept='.csv,text/csv' required></label>
             <button type='submit'>Import backup</button>
+          </form>
+        </section>
+        """,
+    )
+
+
+def render_health(username: str, error: str = "", success: str = "") -> bytes:
+    db = sqlite3.connect(DB_PATH)
+    db.row_factory = sqlite3.Row
+    checks = {r["username"]: r for r in db.execute("SELECT username, checked_on, notes FROM std_checks ORDER BY username").fetchall()}
+    db.close()
+    users = list(configured_users().keys())
+    rows = []
+    for u in users:
+        row = checks.get(u)
+        checked_on = row["checked_on"] if row else "-"
+        due = std_due_message(checked_on) if row else "No check logged"
+        notes = html.escape(row["notes"] or "") if row else ""
+        rows.append(f"<tr><td>{html.escape(u)}</td><td>{html.escape(checked_on)}</td><td>{html.escape(due)}</td><td>{notes or '-'}</td></tr>")
+    err = f"<p class='error'>{html.escape(error)}</p>" if error else ""
+    ok = f"<p class='success'>{html.escape(success)}</p>" if success else ""
+    options = "".join(f"<option value='{html.escape(u)}' {'selected' if u == username else ''}>{html.escape(u)}</option>" for u in users)
+    return page(
+        "Health",
+        f"""
+        {nav(username)}
+        {err}{ok}
+        <section class='card stack block-gap'>
+          <h2>🧪 STD checks</h2>
+          <p class='muted'>Track last checks and countdown to your next recommended test (90 days).</p>
+          <div class='table-wrap'><table><thead><tr><th>User</th><th>Last check</th><th>Due status</th><th>Notes</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div>
+        </section>
+        <section class='card stack block-gap'>
+          <h3>Log / update check</h3>
+          <form method='post' action='/health' class='grid form-grid'>
+            <label>User<select name='username'>{options}</select></label>
+            <label>Check date<input type='date' name='checked_on' required></label>
+            <label class='wide'>Notes<textarea name='notes' rows='2' placeholder='Clinic, panel type, reminders'></textarea></label>
+            <button type='submit'>Save check</button>
           </form>
         </section>
         """,
@@ -584,6 +688,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/backup":
             if not user: self.redirect('/login'); return
             self.send_html(render_backup(user)); return
+        if path == "/health":
+            if not user: self.redirect('/login'); return
+            self.send_html(render_health(user)); return
         if path == "/export.csv":
             if not user: self.redirect('/login'); return
             self.send_csv(csv_export()); return
@@ -631,7 +738,7 @@ class Handler(BaseHTTPRequestHandler):
                 orgy_count = None
                 orgy_details = data.get('orgy_details','').strip()
 
-                if encounter == 'single':
+                if encounter in {'single', 'cruising'}:
                     name = data.get('single_name','').strip()
                     if not name: raise ValueError('Single mode needs a name')
                     rating = int(data.get('single_rating','').strip()) if data.get('single_rating','').strip() else None
@@ -725,6 +832,31 @@ class Handler(BaseHTTPRequestHandler):
             db.execute("INSERT INTO entry_comments (hookup_id, username, comment, created_at) VALUES (?, ?, ?, ?)", (int(entry_id), user, text[:240], now_utc().isoformat(timespec='seconds')))
             db.commit(); db.close()
             self.send_html(render_dashboard(user, success='Comment added 💬'), 201); return
+
+        if path == '/health':
+            if not user: self.redirect('/login'); return
+            data = self.form_data()
+            target_user = (data.get('username') or '').strip()
+            checked_on = (data.get('checked_on') or '').strip()
+            notes = (data.get('notes') or '').strip()
+            allowed_users = set(configured_users().keys())
+            if target_user not in allowed_users:
+                self.send_html(render_health(user, error='Invalid user.'), 400); return
+            try:
+                date.fromisoformat(checked_on)
+            except Exception:
+                self.send_html(render_health(user, error='Invalid date format.'), 400); return
+            db = sqlite3.connect(DB_PATH)
+            db.execute(
+                """
+                INSERT INTO std_checks (username, checked_on, notes, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(username) DO UPDATE SET checked_on=excluded.checked_on, notes=excluded.notes, updated_at=excluded.updated_at
+                """,
+                (target_user, checked_on, notes[:300], now_utc().isoformat(timespec='seconds')),
+            )
+            db.commit(); db.close()
+            self.send_html(render_health(user, success='STD check saved ✅'), 201); return
 
         if path == '/import.csv':
             if not user: self.redirect('/login'); return

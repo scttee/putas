@@ -6,20 +6,23 @@ A private web app for two people to track hookups and view shared + individual s
 - Two-user authentication (defaults: `Scott/puta1` and `Juan/puta2`).
 - Mobile-first dashboard layout:
   - stats
+  - weekly dashboard (last 7 days)
   - individual summary
   - add encounter
   - latest 5 entries
 - Encounter type flow:
-  - pick **single** or **group** immediately after date
+  - pick **single / group / orgy / cruising** immediately after date
   - single mode has one person form
-  - group mode asks count and generates that many per-person forms
+  - group + orgy modes ask count and generate that many per-person forms
 - Additional tracking fields:
   - protection used 🛡️
   - substances 💊
   - repeat partner 🔁
   - mood (amazing/good/mid/regret)
 - Photo gallery (`/gallery`) with lazy-loaded thumbnails.
+- Gallery warns when DB references files that are missing on disk (usually non-persistent deploy storage).
 - CSV backup page (`/backup`) with download + restore/append import.
+- STD checks page (`/health`) with 90-day countdown until next test for each user.
 - Group entries are stored as individual rows linked by `encounter_group_id`.
 
 ## Run
