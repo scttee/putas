@@ -6,7 +6,7 @@ A private web app for two people to track hookups and view shared + individual s
 - Two-user authentication (defaults: `Scott/puta1` and `Juan/puta2`).
 - Mobile-first dashboard layout:
   - stats
-  - weekly dashboard (last 7 days)
+  - weekly dashboard (last 7 days, including loads taken)
   - individual summary
   - add encounter
   - latest 5 entries
@@ -18,6 +18,7 @@ A private web app for two people to track hookups and view shared + individual s
   - protection used 🛡️
   - substances 💊
   - repeat partner 🔁
+  - load taken 💦
   - mood (amazing/good/mid/regret)
 - Photo gallery (`/gallery`) with lazy-loaded thumbnails.
 - Gallery warns when DB references files that are missing on disk (usually non-persistent deploy storage).

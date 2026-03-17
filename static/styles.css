@@ -75,6 +75,11 @@ form label { display: grid; gap: .35rem; }
 .hover-up { transition: transform .2s ease, border-color .2s ease; }
 .hover-up:hover { transform: translateY(-2px); border-color: #5677c6; }
 .mini-card { background: #111a30; }
+.person-showcase { position: relative; overflow: hidden; }
+.person-showcase::after { content: ''; position: absolute; inset: auto -30% -60% auto; width: 180px; height: 180px; background: radial-gradient(circle, rgba(84,124,255,.25), transparent 70%); pointer-events: none; }
+.mini-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .4rem; }
+.mini-stats span { background: #101933; border: 1px solid #2b3a61; border-radius: 10px; padding: .38rem .5rem; font-size: .9rem; }
+
 
 @keyframes fadeIn { from { opacity: .2; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes floatIn { from { opacity: 0; transform: scale(.98) translateY(8px); } to { opacity: 1; transform: scale(1) translateY(0); } }

@@ -77,6 +77,7 @@ def init_db() -> None:
             protection_used TEXT,
             substances TEXT,
             repeat_partner INTEGER NOT NULL DEFAULT 0,
+            load_taken INTEGER NOT NULL DEFAULT 0,
             mood TEXT,
             created_at TEXT NOT NULL
         );
@@ -131,6 +132,7 @@ def ensure_columns(db: sqlite3.Connection) -> None:
         "protection_used": "ALTER TABLE hookups ADD COLUMN protection_used TEXT",
         "substances": "ALTER TABLE hookups ADD COLUMN substances TEXT",
         "repeat_partner": "ALTER TABLE hookups ADD COLUMN repeat_partner INTEGER NOT NULL DEFAULT 0",
+        "load_taken": "ALTER TABLE hookups ADD COLUMN load_taken INTEGER NOT NULL DEFAULT 0",
         "mood": "ALTER TABLE hookups ADD COLUMN mood TEXT",
     }
     for k, sql in migration.items():
@@ -157,6 +159,8 @@ def emoji_summary(row: sqlite3.Row) -> str:
         out.append("👄🔁")
     if row["repeat_partner"]:
         out.append("🔁")
+    if row["load_taken"]:
+        out.append("💦")
     stars = "⭐" * int(row["rating"] or 0)
     if stars:
         out.append(stars)
@@ -271,6 +275,7 @@ def dashboard_script() -> str:
           <label><input type="checkbox" name="gp_${i}_topped"> Topped</label>
           <label><input type="checkbox" name="gp_${i}_bottomed"> Bottomed</label>
           <label><input type="checkbox" name="gp_${i}_repeat"> Repeat partner</label>
+          <label><input type="checkbox" name="gp_${i}_load_taken"> Load taken</label>
         </fieldset>
         <label class="wide">Notes <textarea name="gp_${i}_notes" rows="2"></textarea></label>
       </div>
@@ -303,9 +308,9 @@ def render_dashboard(username: str, error: str = "", success: str = "") -> bytes
     totals = db.execute("SELECT COUNT(*) total_all, COALESCE(SUM(CASE WHEN repeat_partner = 0 THEN 1 ELSE 0 END),0) total_new, COALESCE(SUM(topped),0) topped, COALESCE(SUM(bottomed),0) bottomed, ROUND(AVG(rating),2) avg_rating FROM hookups").fetchone()
     popular_nat = db.execute("SELECT nationality, COUNT(*) total FROM hookups WHERE COALESCE(TRIM(nationality),'')<>'' GROUP BY nationality ORDER BY total DESC, nationality ASC LIMIT 1").fetchone()
     by_sucked = db.execute("SELECT sucked_mode, COUNT(*) total FROM hookups GROUP BY sucked_mode").fetchall()
-    weekly = db.execute("SELECT COUNT(*) total_all, COALESCE(SUM(CASE WHEN repeat_partner = 0 THEN 1 ELSE 0 END),0) total_new, COALESCE(SUM(topped),0) topped, COALESCE(SUM(bottomed),0) bottomed FROM hookups WHERE meetup_date >= date('now','-6 day')").fetchone()
+    weekly = db.execute("SELECT COUNT(*) total_all, COALESCE(SUM(CASE WHEN repeat_partner = 0 THEN 1 ELSE 0 END),0) total_new, COALESCE(SUM(topped),0) topped, COALESCE(SUM(bottomed),0) bottomed, COALESCE(SUM(load_taken),0) loads_taken FROM hookups WHERE meetup_date >= date('now','-6 day')").fetchone()
     weekly_users = db.execute("SELECT recorder, COUNT(*) total FROM hookups WHERE meetup_date >= date('now','-6 day') GROUP BY recorder ORDER BY total DESC, recorder ASC").fetchall()
-    per_user = db.execute("SELECT recorder, COALESCE(SUM(CASE WHEN repeat_partner = 0 THEN 1 ELSE 0 END),0) total, COALESCE(SUM(topped),0) topped, COALESCE(SUM(bottomed),0) bottomed, COALESCE(SUM(CASE WHEN sucked_mode <> 'none' THEN 1 ELSE 0 END),0) sucked_total, ROUND(AVG(rating),2) avg_rating FROM hookups GROUP BY recorder ORDER BY total DESC").fetchall()
+    per_user = db.execute("SELECT recorder, COALESCE(SUM(CASE WHEN repeat_partner = 0 THEN 1 ELSE 0 END),0) total, COALESCE(SUM(topped),0) topped, COALESCE(SUM(bottomed),0) bottomed, COALESCE(SUM(CASE WHEN sucked_mode <> 'none' THEN 1 ELSE 0 END),0) sucked_total, COALESCE(SUM(load_taken),0) loads_taken, ROUND(AVG(rating),2) avg_rating FROM hookups GROUP BY recorder ORDER BY total DESC").fetchall()
     entries = db.execute("SELECT * FROM hookups ORDER BY meetup_date DESC, id DESC LIMIT 5").fetchall()
     entry_ids = [r['id'] for r in entries]
     likes = {}
@@ -319,11 +324,11 @@ def render_dashboard(username: str, error: str = "", success: str = "") -> bytes
     db.close()
 
     sucked_map = {r["sucked_mode"]: r["total"] for r in by_sucked}
-    user_rows = "".join(f"<tr><td>{html.escape(r['recorder'])}</td><td>{r['total']}</td><td>{r['topped']}</td><td>{r['bottomed']}</td><td>{r['sucked_total']}</td><td>{r['avg_rating'] or '-'}</td></tr>" for r in per_user) or "<tr><td colspan='6'>No entries yet.</td></tr>"
+    user_rows = "".join(f"<tr><td>{html.escape(r['recorder'])}</td><td>{r['total']}</td><td>{r['topped']}</td><td>{r['bottomed']}</td><td>{r['sucked_total']}</td><td>{r['loads_taken']}</td><td>{r['avg_rating'] or '-'}</td></tr>" for r in per_user) or "<tr><td colspan='7'>No entries yet.</td></tr>"
 
     latest = []
     for r in entries:
-        orgy_tag = f"🎉 Group x{r['orgy_count']}" if r["encounter_type"] == "orgy" and r["orgy_count"] else "👤 Single"
+        orgy_tag = encounter_label(r)
         group_line = f" · 🧷 {html.escape(r['encounter_group_id'])}" if r["encounter_group_id"] else ""
         photo_link = f"<a href='/uploads/{html.escape(r['photo_path'])}' target='_blank'>📸 View photo</a>" if r["photo_path"] else ""
         protection_line = f"<p>🛡️ {html.escape(r['protection_used'])}</p>" if r["protection_used"] else ""
@@ -376,13 +381,13 @@ def render_dashboard(username: str, error: str = "", success: str = "") -> bytes
 <section class='card stack-sm block-gap'>
   <h3>📆 Weekly dashboard (last 7 days)</h3>
   <p class='big'>🆕 {weekly['total_new']} new · 📝 {weekly['total_all']} logs</p>
-  <p>⬆️ {weekly['topped']} · ⬇️ {weekly['bottomed']}</p>
+  <p>⬆️ {weekly['topped']} · ⬇️ {weekly['bottomed']} · 💦 {weekly['loads_taken']} loads taken</p>
   <p class='muted'>{weekly_user_line}</p>
 </section>
 
 <section class='card stack block-gap'>
   <div class='section-title'><h2>Individual summary</h2><a class='btn secondary' href='/people'>Open full view</a></div>
-  <div class='table-wrap'><table><thead><tr><th>Person</th><th>Count</th><th>Top</th><th>Bottom</th><th>Suck*</th><th>Avg ⭐</th></tr></thead><tbody>{user_rows}</tbody></table></div>
+  <div class='table-wrap'><table><thead><tr><th>Person</th><th>Count</th><th>Top</th><th>Bottom</th><th>Suck*</th><th>Loads 💦</th><th>Avg ⭐</th></tr></thead><tbody>{user_rows}</tbody></table></div>
   <p class='muted'>*Suck total aggregates give/receive/both.</p>
 </section>
 
@@ -417,6 +422,7 @@ def render_dashboard(username: str, error: str = "", success: str = "") -> bytes
         <label><input type='checkbox' name='single_topped'> Topped</label>
         <label><input type='checkbox' name='single_bottomed'> Bottomed</label>
         <label><input type='checkbox' name='single_repeat'> Repeat partner</label>
+        <label><input type='checkbox' name='single_load_taken'> Load taken</label>
         <label>Sucked
           <select name='single_sucked_mode'>
             <option value='none'>None</option><option value='give'>Give</option><option value='receive'>Receive</option><option value='both'>Both</option>
@@ -449,16 +455,19 @@ def render_dashboard(username: str, error: str = "", success: str = "") -> bytes
 def render_people(username: str) -> bytes:
     db = sqlite3.connect(DB_PATH)
     db.row_factory = sqlite3.Row
-    users = db.execute("SELECT recorder, COALESCE(SUM(CASE WHEN repeat_partner = 0 THEN 1 ELSE 0 END),0) total, COUNT(*) total_logs, COALESCE(SUM(CASE WHEN repeat_partner = 1 THEN 1 ELSE 0 END),0) repeats, COALESCE(SUM(topped),0) topped, COALESCE(SUM(bottomed),0) bottomed, COALESCE(SUM(CASE WHEN sucked_mode <> 'none' THEN 1 ELSE 0 END),0) sucked_total, ROUND(AVG(rating),2) avg_rating FROM hookups GROUP BY recorder ORDER BY recorder").fetchall()
+    users = db.execute("SELECT recorder, COALESCE(SUM(CASE WHEN repeat_partner = 0 THEN 1 ELSE 0 END),0) total, COUNT(*) total_logs, COALESCE(SUM(CASE WHEN repeat_partner = 1 THEN 1 ELSE 0 END),0) repeats, COALESCE(SUM(topped),0) topped, COALESCE(SUM(bottomed),0) bottomed, COALESCE(SUM(CASE WHEN sucked_mode <> 'none' THEN 1 ELSE 0 END),0) sucked_total, COALESCE(SUM(load_taken),0) loads_taken, ROUND(AVG(rating),2) avg_rating, MAX(meetup_date) last_date FROM hookups GROUP BY recorder ORDER BY recorder").fetchall()
     db.close()
-    cards = "".join(f"<a class='card link-card stack-sm hover-up' href='/person?name={html.escape(u['recorder'])}'><h3>👤 {html.escape(u['recorder'])}</h3><p>🆕 {u['total']} · 🔁 {u['repeats']} · 📝 {u['total_logs']}</p><p>⬆️ {u['topped']} · ⬇️ {u['bottomed']} · 👄 {u['sucked_total']} · ⭐ {u['avg_rating'] or '-'}</p></a>" for u in users) or "<p>No entries yet.</p>"
-    return page("By person", f"{nav(username)}<section class='card stack block-gap'><div class='section-title'><h2>By person</h2><span class='muted'>Tap a card for full list</span></div><section class='grid stats'>{cards}</section></section>")
+    cards = "".join(
+        f"<a class='card link-card person-showcase stack-sm hover-up' href='/person?name={html.escape(u['recorder'])}'><div class='row between'><h3>👤 {html.escape(u['recorder'])}</h3><span class='pill'>Last: {html.escape(u['last_date'] or '-')}</span></div><div class='mini-stats'><span>🆕 {u['total']}</span><span>🔁 {u['repeats']}</span><span>📝 {u['total_logs']}</span><span>💦 {u['loads_taken']}</span></div><p>⬆️ {u['topped']} · ⬇️ {u['bottomed']} · 👄 {u['sucked_total']} · ⭐ {u['avg_rating'] or '-'}</p><small class='muted'>Tap for full timeline + notes</small></a>"
+        for u in users
+    ) or "<p>No entries yet.</p>"
+    return page("By person", f"{nav(username)}<section class='card stack block-gap'><div class='section-title'><h2>By person</h2><span class='muted'>Tap a card for full list</span></div><p class='muted'>Quick snapshots for each of you ✨</p><section class='grid stats'>{cards}</section></section>")
 
 
 def render_person_list(username: str, person: str) -> bytes:
     db = sqlite3.connect(DB_PATH)
     db.row_factory = sqlite3.Row
-    summary = db.execute("SELECT COALESCE(SUM(CASE WHEN repeat_partner = 0 THEN 1 ELSE 0 END),0) total_new, COUNT(*) total_logs, COALESCE(SUM(CASE WHEN repeat_partner = 1 THEN 1 ELSE 0 END),0) repeats, COALESCE(SUM(topped),0) topped, COALESCE(SUM(bottomed),0) bottomed, COALESCE(SUM(CASE WHEN sucked_mode <> 'none' THEN 1 ELSE 0 END),0) sucked_total, ROUND(AVG(rating),2) avg_rating, MAX(meetup_date) last_date FROM hookups WHERE recorder = ?", (person,)).fetchone()
+    summary = db.execute("SELECT COALESCE(SUM(CASE WHEN repeat_partner = 0 THEN 1 ELSE 0 END),0) total_new, COUNT(*) total_logs, COALESCE(SUM(CASE WHEN repeat_partner = 1 THEN 1 ELSE 0 END),0) repeats, COALESCE(SUM(topped),0) topped, COALESCE(SUM(bottomed),0) bottomed, COALESCE(SUM(CASE WHEN sucked_mode <> 'none' THEN 1 ELSE 0 END),0) sucked_total, COALESCE(SUM(load_taken),0) loads_taken, ROUND(AVG(rating),2) avg_rating, MAX(meetup_date) last_date FROM hookups WHERE recorder = ?", (person,)).fetchone()
     rows = db.execute("SELECT * FROM hookups WHERE recorder = ? ORDER BY meetup_date DESC, id DESC", (person,)).fetchall()
     db.close()
     items = []
@@ -478,6 +487,7 @@ def render_person_list(username: str, person: str) -> bytes:
       <article class='card stack-sm'><h3>🆕 New people</h3><p class='big'>{summary['total_new']}</p><small class='muted'>All logs: {summary['total_logs']}</small></article>
       <article class='card stack-sm'><h3>🔁 Repeats</h3><p class='big'>{summary['repeats']}</p></article>
       <article class='card stack-sm'><h3>⬆️ / ⬇️ / 👄</h3><p class='big'>{summary['topped']} / {summary['bottomed']} / {summary['sucked_total']}</p></article>
+      <article class='card stack-sm'><h3>💦 Loads taken</h3><p class='big'>{summary['loads_taken']}</p></article>
       <article class='card stack-sm'><h3>⭐ Avg rating</h3><p class='big'>{summary['avg_rating'] or '-'}</p><small class='muted'>Last: {html.escape(summary['last_date'] or '-')}</small></article>
     </section>
     """
@@ -567,10 +577,10 @@ def render_health(username: str, error: str = "", success: str = "") -> bytes:
 def csv_export() -> bytes:
     db = sqlite3.connect(DB_PATH)
     db.row_factory = sqlite3.Row
-    rows = db.execute("SELECT id, recorder, partner_names, meetup_date, location, nationality, photo_path, encounter_type, orgy_count, orgy_details, encounter_group_id, topped, bottomed, sucked_mode, rating, protection_used, substances, repeat_partner, mood, notes, created_at FROM hookups ORDER BY meetup_date DESC").fetchall()
+    rows = db.execute("SELECT id, recorder, partner_names, meetup_date, location, nationality, photo_path, encounter_type, orgy_count, orgy_details, encounter_group_id, topped, bottomed, sucked_mode, rating, protection_used, substances, repeat_partner, load_taken, mood, notes, created_at FROM hookups ORDER BY meetup_date DESC").fetchall()
     db.close()
     out = StringIO(); w = csv.writer(out)
-    w.writerow(["id","recorder","partner_names","meetup_date","location","nationality","photo_path","encounter_type","orgy_count","orgy_details","encounter_group_id","topped","bottomed","sucked_mode","rating","protection_used","substances","repeat_partner","mood","notes","created_at"])
+    w.writerow(["id","recorder","partner_names","meetup_date","location","nationality","photo_path","encounter_type","orgy_count","orgy_details","encounter_group_id","topped","bottomed","sucked_mode","rating","protection_used","substances","repeat_partner","load_taken","mood","notes","created_at"])
     for r in rows: w.writerow([r[k] for k in r.keys()])
     return out.getvalue().encode()
 
@@ -594,8 +604,8 @@ def import_csv_bytes(content: bytes) -> int:
                 INSERT INTO hookups (
                   recorder, partner_names, meetup_date, location, nationality, photo_path,
                   encounter_type, orgy_count, orgy_details, encounter_group_id,
-                  topped, bottomed, sucked_mode, rating, protection_used, substances, repeat_partner, mood, notes, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  topped, bottomed, sucked_mode, rating, protection_used, substances, repeat_partner, load_taken, mood, notes, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 recorder, partner, meetup_date,
                 (row.get("location") or "").strip(),
@@ -612,6 +622,7 @@ def import_csv_bytes(content: bytes) -> int:
                 (row.get("protection_used") or "").strip(),
                 (row.get("substances") or "").strip(),
                 1 if str(row.get("repeat_partner","0")).strip() in {"1","true","True"} else 0,
+                1 if str(row.get("load_taken","0")).strip() in {"1","true","True"} else 0,
                 mood,
                 (row.get("notes") or "").strip(),
                 now_utc().isoformat(timespec="seconds"),
@@ -766,6 +777,7 @@ class Handler(BaseHTTPRequestHandler):
                         'protection': data.get('single_protection','').strip(),
                         'substances': data.get('single_substances','').strip(),
                         'repeat': 1 if data.get('single_repeat') else 0,
+                        'load_taken': 1 if data.get('single_load_taken') else 0,
                         'mood': mood,
                     })
                 else:
@@ -790,6 +802,7 @@ class Handler(BaseHTTPRequestHandler):
                             'protection': '',
                             'substances': '',
                             'repeat': 1 if data.get(f'gp_{i}_repeat') else 0,
+                            'load_taken': 1 if data.get(f'gp_{i}_load_taken') else 0,
                             'mood': None,
                         })
 
@@ -799,12 +812,12 @@ class Handler(BaseHTTPRequestHandler):
                         INSERT INTO hookups (
                           recorder, partner_names, meetup_date, location, nationality, photo_path,
                           encounter_type, orgy_count, orgy_details, encounter_group_id,
-                          topped, bottomed, sucked_mode, rating, protection_used, substances, repeat_partner, mood, notes, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                          topped, bottomed, sucked_mode, rating, protection_used, substances, repeat_partner, load_taken, mood, notes, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         user, r['partner'], meetup_date, location, r['nationality'], saved_photo,
                         encounter, orgy_count, orgy_details, group_id,
-                        r['topped'], r['bottomed'], r['sucked'], r['rating'], r['protection'], r['substances'], r['repeat'], r['mood'], r['notes'], now_utc().isoformat(timespec='seconds')
+                        r['topped'], r['bottomed'], r['sucked'], r['rating'], r['protection'], r['substances'], r['repeat'], r['load_taken'], r['mood'], r['notes'], now_utc().isoformat(timespec='seconds')
                     ))
                 db.commit(); db.close()
                 self.send_html(render_dashboard(user, success=f"Saved {len(rows)} individual entr{'y' if len(rows)==1 else 'ies'} ✅"), 201); return
