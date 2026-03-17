@@ -21,6 +21,8 @@ A private web app for two people to track hookups and view shared + individual s
   - load taken 💦
   - mood (amazing/good/mid/regret)
 - Photo gallery (`/gallery`) with lazy-loaded thumbnails.
+- Attach/replace photos on existing entries from each person's list page.
+- Likes, comments, and comment replies are available on dashboard cards and by-person list cards.
 - Gallery warns when DB references files that are missing on disk (usually non-persistent deploy storage).
 - CSV backup page (`/backup`) with download + restore/append import.
 - STD checks page (`/health`) with 90-day countdown until next test for each user.
@@ -79,3 +81,6 @@ Tip: keep using CSV export from `/backup` as an extra safety backup.
 ```bash
 CF_ACCESS_EMAILS=you@example.com,friend@example.com
 ```
+
+
+Photo uploads now accept iPhone formats (HEIC/HEIF) in addition to JPG/PNG/GIF/WEBP.

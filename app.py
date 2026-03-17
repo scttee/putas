@@ -104,6 +104,14 @@ def init_db() -> None:
             created_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS comment_replies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            comment_id INTEGER NOT NULL,
+            username TEXT NOT NULL,
+            reply TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS std_checks (
             username TEXT PRIMARY KEY,
             checked_on TEXT NOT NULL,
@@ -176,6 +184,36 @@ def encounter_label(row: sqlite3.Row) -> str:
     if kind == "cruising":
         return "🚶 Cruising"
     return "👤 Single"
+
+
+def render_entry_social(entry_id: int, like_count: int, comment_rows: list[sqlite3.Row], reply_map: dict[int, list[tuple[str, str]]], return_to: str = "") -> str:
+    rt_input = f"<input type='hidden' name='return_to' value='{html.escape(return_to)}'>" if return_to else ""
+    comments_html_parts = []
+    for c in comment_rows[:3]:
+        replies = reply_map.get(c["id"], [])[:3]
+        replies_html = "".join(f"<p class='muted reply-line'>↪️ <strong>{html.escape(r_user)}</strong>: {html.escape(r_text)}</p>" for r_user, r_text in replies)
+        comments_html_parts.append(
+            f"<div class='comment-block'><p class='muted'>💬 <strong>{html.escape(c['username'])}</strong>: {html.escape(c['comment'])}</p><div class='comment-replies'>{replies_html}</div><form method='post' action='/comment-reply' class='row comment-form'><input type='hidden' name='comment_id' value='{c['id']}'>{rt_input}<input name='reply' maxlength='240' placeholder='Reply...'><button type='submit' class='btn secondary'>Reply</button></form></div>"
+        )
+    comments_html = "".join(comments_html_parts)
+    return f"""
+        <div class='entry-social stack-sm'>
+          <div class='row'>
+            <form method='post' action='/like' class='inline-form'>
+              <input type='hidden' name='entry_id' value='{entry_id}'>
+              {rt_input}
+              <button type='submit' class='btn secondary'>❤️ Like ({like_count})</button>
+            </form>
+          </div>
+          <form method='post' action='/comment' class='row comment-form'>
+            <input type='hidden' name='entry_id' value='{entry_id}'>
+            {rt_input}
+            <input name='comment' maxlength='240' placeholder='Add a comment...'>
+            <button type='submit' class='btn secondary'>Post</button>
+          </form>
+          <div class='comments'>{comments_html}</div>
+        </div>
+    """
 
 
 def std_due_message(checked_on: str) -> str:
@@ -314,13 +352,20 @@ def render_dashboard(username: str, error: str = "", success: str = "") -> bytes
     entries = db.execute("SELECT * FROM hookups ORDER BY meetup_date DESC, id DESC LIMIT 5").fetchall()
     entry_ids = [r['id'] for r in entries]
     likes = {}
-    comments = {}
+    comments: dict[int, list[sqlite3.Row]] = {}
+    replies: dict[int, list[tuple[str, str]]] = {}
     if entry_ids:
         placeholders = ','.join('?' for _ in entry_ids)
         for lr in db.execute(f"SELECT hookup_id, COUNT(*) total FROM entry_likes WHERE hookup_id IN ({placeholders}) GROUP BY hookup_id", entry_ids):
             likes[lr['hookup_id']] = lr['total']
-        for cr in db.execute(f"SELECT hookup_id, username, comment FROM entry_comments WHERE hookup_id IN ({placeholders}) ORDER BY id DESC", entry_ids):
-            comments.setdefault(cr['hookup_id'], []).append((cr['username'], cr['comment']))
+        comment_rows = db.execute(f"SELECT id, hookup_id, username, comment FROM entry_comments WHERE hookup_id IN ({placeholders}) ORDER BY id DESC", entry_ids).fetchall()
+        for cr in comment_rows:
+            comments.setdefault(cr['hookup_id'], []).append(cr)
+        comment_ids = [c['id'] for c in comment_rows]
+        if comment_ids:
+            cph = ','.join('?' for _ in comment_ids)
+            for rr in db.execute(f"SELECT comment_id, username, reply FROM comment_replies WHERE comment_id IN ({cph}) ORDER BY id DESC", comment_ids):
+                replies.setdefault(rr['comment_id'], []).append((rr['username'], rr['reply']))
     db.close()
 
     sucked_map = {r["sucked_mode"]: r["total"] for r in by_sucked}
@@ -336,27 +381,8 @@ def render_dashboard(username: str, error: str = "", success: str = "") -> bytes
         notes_line = f"<p>📝 {html.escape(r['notes'])}</p>" if r["notes"] else ""
         repeat_badge = "<span class='pill'>🔁 Repeat</span>" if r['repeat_partner'] else ""
         like_count = likes.get(r['id'], 0)
-        comment_rows = comments.get(r['id'], [])[:3]
-        comments_html = "".join(
-            f"<p class='muted'>💬 <strong>{html.escape(c_user)}</strong>: {html.escape(c_text)}</p>"
-            for c_user, c_text in comment_rows
-        )
-        social_html = f"""
-        <div class='entry-social stack-sm'>
-          <div class='row'>
-            <form method='post' action='/like' class='inline-form'>
-              <input type='hidden' name='entry_id' value='{r['id']}'>
-              <button type='submit' class='btn secondary'>❤️ Like ({like_count})</button>
-            </form>
-          </div>
-          <form method='post' action='/comment' class='row comment-form'>
-            <input type='hidden' name='entry_id' value='{r['id']}'>
-            <input name='comment' maxlength='240' placeholder='Add a comment...'>
-            <button type='submit' class='btn secondary'>Post</button>
-          </form>
-          <div class='comments'>{comments_html}</div>
-        </div>
-        """
+        comment_rows = comments.get(r['id'], [])
+        social_html = render_entry_social(r['id'], like_count, comment_rows, replies)
         latest.append(
             f"<article class='entry stack-sm hover-up'><div class='row between'><strong>{html.escape(r['partner_names'])}</strong><span class='muted'>📅 {html.escape(r['meetup_date'])}</span></div><small>📍 {html.escape(r['location'] or 'No location')} · 🌍 {html.escape(r['nationality'] or 'Unknown')} · 👤 {html.escape(r['recorder'])}</small><small>{encounter_label(r)}{group_line} · {emoji_summary(r)} · {html.escape(r['mood'] or '—')}</small>{repeat_badge}{photo_link}{protection_line}{substances_line}{notes_line}{social_html}</article>"
         )
@@ -464,11 +490,27 @@ def render_people(username: str) -> bytes:
     return page("By person", f"{nav(username)}<section class='card stack block-gap'><div class='section-title'><h2>By person</h2><span class='muted'>Tap a card for full list</span></div><p class='muted'>Quick snapshots for each of you ✨</p><section class='grid stats'>{cards}</section></section>")
 
 
-def render_person_list(username: str, person: str) -> bytes:
+def render_person_list(username: str, person: str, error: str = "", success: str = "") -> bytes:
     db = sqlite3.connect(DB_PATH)
     db.row_factory = sqlite3.Row
     summary = db.execute("SELECT COALESCE(SUM(CASE WHEN repeat_partner = 0 THEN 1 ELSE 0 END),0) total_new, COUNT(*) total_logs, COALESCE(SUM(CASE WHEN repeat_partner = 1 THEN 1 ELSE 0 END),0) repeats, COALESCE(SUM(topped),0) topped, COALESCE(SUM(bottomed),0) bottomed, COALESCE(SUM(CASE WHEN sucked_mode <> 'none' THEN 1 ELSE 0 END),0) sucked_total, COALESCE(SUM(load_taken),0) loads_taken, ROUND(AVG(rating),2) avg_rating, MAX(meetup_date) last_date FROM hookups WHERE recorder = ?", (person,)).fetchone()
     rows = db.execute("SELECT * FROM hookups WHERE recorder = ? ORDER BY meetup_date DESC, id DESC", (person,)).fetchall()
+    entry_ids = [r['id'] for r in rows]
+    likes: dict[int, int] = {}
+    comments: dict[int, list[sqlite3.Row]] = {}
+    replies: dict[int, list[tuple[str, str]]] = {}
+    if entry_ids:
+        eph = ','.join('?' for _ in entry_ids)
+        for lr in db.execute(f"SELECT hookup_id, COUNT(*) total FROM entry_likes WHERE hookup_id IN ({eph}) GROUP BY hookup_id", entry_ids):
+            likes[lr['hookup_id']] = lr['total']
+        comment_rows = db.execute(f"SELECT id, hookup_id, username, comment FROM entry_comments WHERE hookup_id IN ({eph}) ORDER BY id DESC", entry_ids).fetchall()
+        for cr in comment_rows:
+            comments.setdefault(cr['hookup_id'], []).append(cr)
+        comment_ids = [c['id'] for c in comment_rows]
+        if comment_ids:
+            cph = ','.join('?' for _ in comment_ids)
+            for rr in db.execute(f"SELECT comment_id, username, reply FROM comment_replies WHERE comment_id IN ({cph}) ORDER BY id DESC", comment_ids):
+                replies.setdefault(rr['comment_id'], []).append((rr['username'], rr['reply']))
     db.close()
     items = []
     for r in rows:
@@ -479,8 +521,10 @@ def render_person_list(username: str, person: str) -> bytes:
         substances_line = f"<p>💊 {html.escape(r['substances'])}</p>" if r["substances"] else ""
         notes_line = f"<p>📝 {html.escape(r['notes'])}</p>" if r["notes"] else ""
         repeat_badge = "<span class='pill'>🔁 Repeat</span>" if r['repeat_partner'] else ""
+        photo_form = f"<form class='photo-inline-form' method='post' action='/entry-photo' enctype='multipart/form-data'><input type='hidden' name='entry_id' value='{r['id']}'><input type='hidden' name='return_to' value='{html.escape(person)}'><label>Attach/replace photo <input type='file' name='photo' accept='image/*' required></label><button type='submit' class='btn secondary'>Save photo</button></form>"
+        social_html = render_entry_social(r['id'], likes.get(r['id'], 0), comments.get(r['id'], []), replies, return_to=person)
         items.append(
-            f"<article class='entry stack-sm'><strong>{html.escape(r['partner_names'])}</strong><small>📅 {html.escape(r['meetup_date'])} · 📍 {html.escape(r['location'] or 'No location')}</small><small>🌍 {html.escape(r['nationality'] or 'Unknown')} · {orgy_tag}{group_line} · {emoji_summary(r)}</small>{repeat_badge}{photo_link}{protection_line}{substances_line}{notes_line}</article>"
+            f"<article class='entry stack-sm'><strong>{html.escape(r['partner_names'])}</strong><small>📅 {html.escape(r['meetup_date'])} · 📍 {html.escape(r['location'] or 'No location')}</small><small>🌍 {html.escape(r['nationality'] or 'Unknown')} · {orgy_tag}{group_line} · {emoji_summary(r)}</small>{repeat_badge}{photo_link}{photo_form}{protection_line}{substances_line}{notes_line}{social_html}</article>"
         )
     summary_cards = f"""
     <section class='grid stats block-gap'>
@@ -491,7 +535,9 @@ def render_person_list(username: str, person: str) -> bytes:
       <article class='card stack-sm'><h3>⭐ Avg rating</h3><p class='big'>{summary['avg_rating'] or '-'}</p><small class='muted'>Last: {html.escape(summary['last_date'] or '-')}</small></article>
     </section>
     """
-    return page("Person list", f"{nav(username)}<section class='card stack block-gap'><h2>{html.escape(person)} summary</h2>{summary_cards}</section><section class='card stack block-gap'><h2>Entries for {html.escape(person)}</h2><div class='entries'>{''.join(items) or '<p>No entries yet.</p>'}</div></section>")
+    err = f"<p class='error'>{html.escape(error)}</p>" if error else ""
+    ok = f"<p class='success'>{html.escape(success)}</p>" if success else ""
+    return page("Person list", f"{nav(username)}{err}{ok}<section class='card stack block-gap'><h2>{html.escape(person)} summary</h2>{summary_cards}</section><section class='card stack block-gap'><h2>Entries for {html.escape(person)}</h2><div class='entries'>{''.join(items) or '<p>No entries yet.</p>'}</div></section>")
 
 
 def render_gallery(username: str) -> bytes:
@@ -633,25 +679,26 @@ def import_csv_bytes(content: bytes) -> int:
     db.commit(); db.close(); return inserted
 
 
-def parse_multipart(handler: BaseHTTPRequestHandler) -> tuple[dict[str, str], dict[str, tuple[str, bytes]]]:
+def parse_multipart(handler: BaseHTTPRequestHandler) -> tuple[dict[str, str], dict[str, tuple[str, bytes, str]]]:
     body = handler.rfile.read(int(handler.headers.get("Content-Length", "0")))
     ctype = handler.headers.get("Content-Type", "")
     msg = BytesParser(policy=default).parsebytes(f"Content-Type: {ctype}\r\nMIME-Version: 1.0\r\n\r\n".encode() + body)
     fields: dict[str, str] = {}
-    files: dict[str, tuple[str, bytes]] = {}
+    files: dict[str, tuple[str, bytes, str]] = {}
     for part in msg.iter_parts():
         if "form-data" not in part.get("Content-Disposition", ""): continue
         name = part.get_param("name", header="content-disposition")
         if not name: continue
         fn = part.get_filename(); payload = part.get_payload(decode=True) or b""
-        if fn: files[name] = (fn, payload)
+        ctype = part.get_content_type() or "application/octet-stream"
+        if fn: files[name] = (fn, payload, ctype)
         else: fields[name] = payload.decode("utf-8", errors="ignore")
     return fields, files
 
 
 def safe_filename(filename: str) -> str:
     ext = Path(filename).suffix.lower()
-    if ext not in {".jpg", ".jpeg", ".png", ".gif", ".webp"}: ext = ".jpg"
+    if ext not in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif"}: ext = ".bin"
     return f"{secrets.token_hex(12)}{ext}"
 
 
@@ -681,7 +728,7 @@ class Handler(BaseHTTPRequestHandler):
     def send_file(self, path: Path) -> None:
         if not path.exists() or not path.is_file():
             self.send_html(page("404", "<section class='card'><h1>Not found</h1></section>"), 404); return
-        c = path.read_bytes(); mime = {".png":"image/png", ".gif":"image/gif", ".webp":"image/webp"}.get(path.suffix.lower(), "image/jpeg")
+        c = path.read_bytes(); mime = {".png":"image/png", ".gif":"image/gif", ".webp":"image/webp", ".jpg":"image/jpeg", ".jpeg":"image/jpeg", ".heic":"image/heic", ".heif":"image/heif"}.get(path.suffix.lower(), "application/octet-stream")
         self.send_response(200); self.send_header("Content-Type", mime); self.send_header("Cache-Control", "public, max-age=86400"); self.send_header("Content-Length", str(len(c))); self.end_headers(); self.wfile.write(c)
 
     def redirect(self, loc: str) -> None:
@@ -752,7 +799,9 @@ class Handler(BaseHTTPRequestHandler):
                 location = data.get('location','').strip()
                 saved_photo = None
                 if files.get('photo') and files['photo'][1]:
-                    saved_photo = safe_filename(files['photo'][0]); (UPLOAD_DIR / saved_photo).write_bytes(files['photo'][1])
+                    filename, payload, _ = files['photo']
+                    saved_photo = safe_filename(filename)
+                    (UPLOAD_DIR / saved_photo).write_bytes(payload)
 
                 rows = []
                 group_id = None
@@ -824,37 +873,98 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self.send_html(render_dashboard(user, error=f"Could not save entry: {exc}"), 400); return
 
+        if path == '/entry-photo':
+            if not user: self.redirect('/login'); return
+            if 'multipart/form-data' not in self.headers.get('Content-Type',''):
+                self.send_html(render_person_list(user, user, error='Please choose a photo file.'), 400); return
+            data, files = parse_multipart(self)
+            entry_id = (data.get('entry_id') or '').strip()
+            return_to = (data.get('return_to') or user).strip() or user
+            if not entry_id.isdigit():
+                self.send_html(render_person_list(user, return_to, error='Invalid entry id.'), 400); return
+            file_part = files.get('photo')
+            if not file_part or not file_part[1]:
+                self.send_html(render_person_list(user, return_to, error='Please select a photo file.'), 400); return
+            filename, payload, _ = file_part
+            saved_photo = safe_filename(filename)
+            (UPLOAD_DIR / saved_photo).write_bytes(payload)
+            db = sqlite3.connect(DB_PATH)
+            found = db.execute('SELECT recorder FROM hookups WHERE id=?', (int(entry_id),)).fetchone()
+            if not found:
+                db.close()
+                self.send_html(render_person_list(user, return_to, error='Entry not found.'), 404); return
+            db.execute('UPDATE hookups SET photo_path=? WHERE id=?', (saved_photo, int(entry_id)))
+            db.commit(); db.close()
+            self.send_html(render_person_list(user, return_to, success='Photo saved ✅'), 201); return
+
 
         if path == '/like':
             if not user: self.redirect('/login'); return
             data = self.form_data()
             entry_id = (data.get('entry_id') or '').strip()
+            return_to = (data.get('return_to') or '').strip()
             if not entry_id.isdigit():
+                if return_to:
+                    self.send_html(render_person_list(user, return_to, error='Invalid entry id'), 400); return
                 self.send_html(render_dashboard(user, error='Invalid entry id'), 400); return
             db = sqlite3.connect(DB_PATH)
             found = db.execute("SELECT 1 FROM hookups WHERE id=?", (int(entry_id),)).fetchone()
             if not found:
                 db.close()
+                if return_to:
+                    self.send_html(render_person_list(user, return_to, error='Entry not found'), 404); return
                 self.send_html(render_dashboard(user, error='Entry not found'), 404); return
             db.execute("INSERT OR IGNORE INTO entry_likes (hookup_id, username, created_at) VALUES (?, ?, ?)", (int(entry_id), user, now_utc().isoformat(timespec='seconds')))
             db.commit(); db.close()
+            if return_to:
+                self.send_html(render_person_list(user, return_to, success='Liked ❤️'), 201); return
             self.send_html(render_dashboard(user, success='Liked ❤️'), 201); return
 
         if path == '/comment':
             if not user: self.redirect('/login'); return
             data = self.form_data()
             entry_id = (data.get('entry_id') or '').strip()
+            return_to = (data.get('return_to') or '').strip()
             text = (data.get('comment') or '').strip()
             if not entry_id.isdigit() or not text:
+                if return_to:
+                    self.send_html(render_person_list(user, return_to, error='Comment requires entry and text'), 400); return
                 self.send_html(render_dashboard(user, error='Comment requires entry and text'), 400); return
             db = sqlite3.connect(DB_PATH)
             found = db.execute("SELECT 1 FROM hookups WHERE id=?", (int(entry_id),)).fetchone()
             if not found:
                 db.close()
+                if return_to:
+                    self.send_html(render_person_list(user, return_to, error='Entry not found'), 404); return
                 self.send_html(render_dashboard(user, error='Entry not found'), 404); return
             db.execute("INSERT INTO entry_comments (hookup_id, username, comment, created_at) VALUES (?, ?, ?, ?)", (int(entry_id), user, text[:240], now_utc().isoformat(timespec='seconds')))
             db.commit(); db.close()
+            if return_to:
+                self.send_html(render_person_list(user, return_to, success='Comment added 💬'), 201); return
             self.send_html(render_dashboard(user, success='Comment added 💬'), 201); return
+
+        if path == '/comment-reply':
+            if not user: self.redirect('/login'); return
+            data = self.form_data()
+            comment_id = (data.get('comment_id') or '').strip()
+            return_to = (data.get('return_to') or '').strip()
+            reply = (data.get('reply') or '').strip()
+            if not comment_id.isdigit() or not reply:
+                if return_to:
+                    self.send_html(render_person_list(user, return_to, error='Reply requires comment and text'), 400); return
+                self.send_html(render_dashboard(user, error='Reply requires comment and text'), 400); return
+            db = sqlite3.connect(DB_PATH)
+            found = db.execute("SELECT 1 FROM entry_comments WHERE id=?", (int(comment_id),)).fetchone()
+            if not found:
+                db.close()
+                if return_to:
+                    self.send_html(render_person_list(user, return_to, error='Comment not found'), 404); return
+                self.send_html(render_dashboard(user, error='Comment not found'), 404); return
+            db.execute("INSERT INTO comment_replies (comment_id, username, reply, created_at) VALUES (?, ?, ?, ?)", (int(comment_id), user, reply[:240], now_utc().isoformat(timespec='seconds')))
+            db.commit(); db.close()
+            if return_to:
+                self.send_html(render_person_list(user, return_to, success='Reply added ↩️'), 201); return
+            self.send_html(render_dashboard(user, success='Reply added ↩️'), 201); return
 
         if path == '/health':
             if not user: self.redirect('/login'); return
